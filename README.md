@@ -13,8 +13,10 @@
   - 纯 Go 编写并编译为单个静态二进制文件（零外部 C 库与动态链接依赖）。
   - **内存常驻占用仅 1.3 MB ~ 3.5 MB**，CPU 消耗接近 0。
   - 采用 **内存实时原子累加 + 批量异步落库 (SQLite WAL 模式)**，彻底规避高频 I/O 损耗。
+- 🤖 **GitHub Actions CI/CD**：自动构建并发布 `linux-amd64` 和 `linux-arm64` 静态二进制文件至 Releases。
+- 📦 **全自动交互式安装**：脚本自动识别系统 CPU 架构、自动从 Releases 下载最新二进制文件、引导配置 Caddy 域名并自动注入/重载 Caddyfile。
 - 🔐 **Web 安全访问认证**：仪表盘与数据 API 受 Session Cookie 保护，未登录无法窥视统计，媒体反代请求不受影响。
-- 🤖 **Telegram 每日定时播报**：每日定时自动汇总推送当日播放次数、流转流量与累计历史数据，支持手动一键测试推送。
+- 📱 **Telegram 每日定时播报**：每日定时自动汇总推送当日播放次数、流转流量与累计历史数据，支持手动一键测试推送。
 - 🔄 **完善的日志轮转策略**：Caddy 内置日志轮转 + logrotate 系统级双重保障，支持无缝热重载与文件轮转自动感知。
 
 ---
@@ -27,7 +29,7 @@
                ▼
 [ Caddy 2 反向代理网关 (auto.your-domain.com) ]
    ├── 媒体流/API 代理 ──────► [ 原始上游 Emby 实例 (动态回源) ]
-   ├── 结构化访问日志 ──────► [ /var/log/caddy/auto.fleey.de.log ]
+   ├── 结构化访问日志 ──────► [ /var/log/caddy/<domain>.log ]
    └── 管理控制台 (/) ──────► [ emby-proxy-stat 后台服务 (127.0.0.1:8999) ]
                                     │
                                     ├─ 异步 Log Tail 解析
@@ -42,6 +44,9 @@
 
 ```text
 emby-proxy-stat/
+├── .github/
+│   └── workflows/
+│       └── release.yml           # GitHub Actions 自动化编译与多架构 Release
 ├── cmd/
 │   └── emby-proxy-stat/
 │       ├── main.go               # Go 核心服务源码
@@ -53,21 +58,20 @@ emby-proxy-stat/
 ├── deploy/
 │   ├── emby-proxy-stat.service   # systemd 系统守护进程配置
 │   ├── logrotate.caddy           # logrotate 日志轮转配置
-│   └── install.sh                # 交互式一键安装与部署脚本
+│   └── install.sh                # 全自动交互式安装脚本 (支持 Release 下载与 Caddy 域名注入)
 ├── config.example.json           # 配置文件模板 (脱敏)
-├── go.mod                        # Go 模块定义
-├── go.sum                        # 依赖锁文件
+├── go.mod / go.sum               # Go 依赖文件
 ├── .gitignore
-└── README.md                     # 项目使用与部署文档
+└── README.md                     # 项目说明文档
 ```
 
 ---
 
-## 🚀 快速开始与部署
+## 🚀 快速开始与一键部署
 
-### 方式一：交互式一键部署（推荐）
+### 交互式一键部署（推荐）
 
-直接克隆仓库并运行交互式安装脚本：
+直接克隆仓库并运行安装脚本（无需预装 Go 编译器，脚本会自动从 GitHub Releases 拉取对应架构的预编译二进制）：
 
 ```bash
 git clone https://github.com/buglyz/emby-proxy-stat.git
@@ -75,56 +79,28 @@ cd emby-proxy-stat
 sudo bash deploy/install.sh
 ```
 
-脚本将引导您完成：
-1. 管理员账号与访问密码设置；
-2. 是否开启 Telegram 每日自动播报（输入 Bot Token / Chat ID / 推送时间）；
-3. 自动编译安装 Go 二进制、配置 systemd 守护进程与 logrotate 日志轮转。
+**安装脚本交互流程**：
+1. 🌐 **Caddy 域名配置**：输入反代域名（如 `auto.mydomain.com`），脚本自动将完整反代与日志规则写入 `/etc/caddy/Caddyfile` 并自动校验与重载 Caddy；
+2. 🔐 **安全认证**：输入管理员账号与访问密码；
+3. 📱 **Telegram 播报**：选择是否开启 Telegram 每日自动推送（输入 Bot Token / Chat ID / 定时推送时间）；
+4. ⚡ **二进制安装**：自动探测当前 CPU 架构（amd64 / arm64）并从 GitHub Releases 自动下载部署；
+5. 🔄 **服务注册**：自动配置 systemd 守护进程与 logrotate 日志轮转规则并启动。
 
 ---
 
-### 方式二：手动编译与配置
+### 手动构建与安装
 
-#### 1. 编译构建
+如果您需要自行从源码编译：
 
 ```bash
-# 交叉编译 Linux amd64 静态二进制文件
+# 1. 交叉编译 Linux amd64 静态二进制
 CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -ldflags="-s -w" -o emby-proxy-stat ./cmd/emby-proxy-stat
-```
 
-#### 2. 配置文件 (`/opt/emby-proxy-stat/config.json`)
-
-```bash
+# 2. 拷贝配置文件
 cp config.example.json /opt/emby-proxy-stat/config.json
 chmod 600 /opt/emby-proxy-stat/config.json
-```
 
-```json
-{
-  "auth": {
-    "username": "admin",
-    "password": "your_strong_password"
-  },
-  "telegram": {
-    "enabled": true,
-    "bot_token": "YOUR_TG_BOT_TOKEN",
-    "chat_id": "YOUR_TG_CHAT_ID",
-    "daily_report_time": "23:59"
-  }
-}
-```
-
-#### 3. 配置 Caddy (`/etc/caddy/Caddyfile`)
-
-参考 `caddy/Caddyfile` 中的反代与日志规则配置您的域名，配置完成后重载 Caddy：
-
-```bash
-caddy validate --config /etc/caddy/Caddyfile
-systemctl reload caddy
-```
-
-#### 4. 启动后台服务
-
-```bash
+# 3. 注册并启动 systemd 服务
 cp deploy/emby-proxy-stat.service /etc/systemd/system/
 systemctl daemon-reload
 systemctl enable --now emby-proxy-stat

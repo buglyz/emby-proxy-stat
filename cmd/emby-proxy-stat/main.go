@@ -48,6 +48,7 @@ type Config struct {
 		ChatID          string `json:"chat_id"`
 		DailyReportTime string `json:"daily_report_time"`
 	} `json:"telegram"`
+	CaddyLogPath string `json:"caddy_log_path"`
 }
 
 type StatsResponse struct {
@@ -131,6 +132,14 @@ func reloadConfig() error {
 	}
 	currentConfig = cfg
 	return nil
+}
+
+func getEffectiveLogPath() string {
+	cfg := loadConfig()
+	if cfg.CaddyLogPath != "" {
+		return cfg.CaddyLogPath
+	}
+	return *logPathFlag
 }
 
 func initDB() error {
@@ -387,7 +396,8 @@ func extractTargetHost(uri string) string {
 
 func logTailWorker() {
 	for {
-		file, err := os.Open(*logPathFlag)
+		activeLogPath := getEffectiveLogPath()
+		file, err := os.Open(activeLogPath)
 		if err != nil {
 			time.Sleep(1 * time.Second)
 			continue
@@ -408,7 +418,7 @@ func logTailWorker() {
 			if err != nil {
 				if err == io.EOF {
 					time.Sleep(200 * time.Millisecond)
-					newFi, statErr := os.Stat(*logPathFlag)
+					newFi, statErr := os.Stat(activeLogPath)
 					if statErr != nil || !os.SameFile(fi, newFi) {
 						file.Close()
 						break
