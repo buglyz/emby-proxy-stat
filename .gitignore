@@ -1,0 +1,22 @@
+# Binaries
+/emby-proxy-stat
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+
+# Data & Config
+config.json
+data/
+*.db
+*.db-wal
+*.db-shm
+*.log
+
+# IDE & OS
+.idea/
+.vscode/
+*.swp
+.DS_Store
+Thumbs.db

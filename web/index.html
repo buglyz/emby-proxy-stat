@@ -1,0 +1,728 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Emby Proxy Toolbox | 动态通用流媒体反向代理网关</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <style>
+        :root {
+            --bg: #0d1117;
+            --card-bg: rgba(22, 27, 34, 0.85);
+            --card-border: #30363d;
+            --table-head-bg: #161b22;
+            --table-row-hover: rgba(56, 139, 253, 0.08);
+            --table-border: #21262d;
+            --primary: #58a6ff;
+            --primary-glow: rgba(88, 166, 255, 0.25);
+            --accent: #2ea043;
+            --danger: #f85149;
+            --text-main: #f0f6fc;
+            --text-muted: #8b949e;
+            --font-main: 'Plus Jakarta Sans', -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+            --font-mono: 'JetBrains Mono', monospace;
+        }
+
+        * {
+            box-sizing: border-box;
+            margin: 0;
+            padding: 0;
+        }
+
+        body {
+            background-color: var(--bg);
+            background-image: 
+                radial-gradient(at 0% 0%, rgba(56, 139, 253, 0.08) 0px, transparent 50%),
+                radial-gradient(at 100% 100%, rgba(46, 160, 67, 0.06) 0px, transparent 50%);
+            background-attachment: fixed;
+            color: var(--text-main);
+            font-family: var(--font-main);
+            min-height: 100vh;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            padding: 40px 20px;
+        }
+
+        .container {
+            width: 100%;
+            max-width: 900px;
+            display: flex;
+            flex-direction: column;
+            gap: 28px;
+        }
+
+        .header {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            padding: 4px 4px;
+        }
+
+        .brand {
+            display: flex;
+            align-items: center;
+            gap: 14px;
+        }
+
+        .logo-box {
+            width: 44px;
+            height: 44px;
+            border-radius: 12px;
+            background: linear-gradient(135deg, #1f6feb, #238636);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 22px;
+            box-shadow: 0 6px 16px rgba(31, 111, 235, 0.25);
+        }
+
+        .brand h1 {
+            font-size: 20px;
+            font-weight: 700;
+            letter-spacing: -0.02em;
+        }
+
+        .brand p {
+            font-size: 13px;
+            color: var(--text-muted);
+        }
+
+        .header-actions {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+        }
+
+        .badge-status {
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+            padding: 6px 14px;
+            border-radius: 20px;
+            background: rgba(46, 160, 67, 0.12);
+            border: 1px solid rgba(46, 160, 67, 0.3);
+            color: #3fb950;
+            font-size: 13px;
+            font-weight: 600;
+        }
+
+        .dot {
+            width: 8px;
+            height: 8px;
+            border-radius: 50%;
+            background-color: #3fb950;
+            box-shadow: 0 0 10px #3fb950;
+            animation: pulse 2s infinite;
+        }
+
+        @keyframes pulse {
+            0%, 100% { opacity: 1; transform: scale(1); }
+            50% { opacity: 0.5; transform: scale(0.85); }
+        }
+
+        .logout-btn {
+            background: rgba(248, 81, 73, 0.1);
+            border: 1px solid rgba(248, 81, 73, 0.3);
+            color: #ff7b72;
+            padding: 6px 12px;
+            border-radius: 8px;
+            font-size: 12px;
+            cursor: pointer;
+            transition: all 0.2s;
+        }
+
+        .logout-btn:hover {
+            background: rgba(248, 81, 73, 0.2);
+        }
+
+        .login-card {
+            width: 100%;
+            max-width: 400px;
+            margin: 60px auto;
+            background: var(--card-bg);
+            border: 1px solid var(--card-border);
+            border-radius: 16px;
+            padding: 32px;
+            box-shadow: 0 12px 36px rgba(0, 0, 0, 0.4);
+            backdrop-filter: blur(12px);
+            display: flex;
+            flex-direction: column;
+            gap: 20px;
+        }
+
+        .login-title {
+            text-align: center;
+            font-size: 18px;
+            font-weight: 700;
+        }
+
+        .login-form {
+            display: flex;
+            flex-direction: column;
+            gap: 14px;
+        }
+
+        .form-label {
+            font-size: 12px;
+            color: var(--text-muted);
+            font-weight: 600;
+            margin-bottom: 4px;
+        }
+
+        .form-input {
+            width: 100%;
+            background: #090c10;
+            border: 1px solid #30363d;
+            border-radius: 8px;
+            padding: 10px 14px;
+            color: #f0f6fc;
+            font-size: 14px;
+            outline: none;
+            transition: border-color 0.2s;
+        }
+
+        .form-input:focus {
+            border-color: var(--primary);
+            box-shadow: 0 0 0 3px var(--primary-glow);
+        }
+
+        .login-btn {
+            background: #238636;
+            color: #fff;
+            border: none;
+            border-radius: 8px;
+            padding: 12px;
+            font-weight: 600;
+            font-size: 14px;
+            cursor: pointer;
+            transition: background 0.2s;
+            margin-top: 6px;
+        }
+
+        .login-btn:hover {
+            background: #2ea043;
+        }
+
+        .login-error {
+            color: var(--danger);
+            font-size: 12px;
+            text-align: center;
+            display: none;
+        }
+
+        .section-card {
+            background: var(--card-bg);
+            border: 1px solid var(--card-border);
+            border-radius: 14px;
+            overflow: hidden;
+            box-shadow: 0 8px 24px rgba(0, 0, 0, 0.25);
+            backdrop-filter: blur(12px);
+        }
+
+        .section-header {
+            padding: 16px 20px;
+            border-bottom: 1px solid var(--card-border);
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            background: rgba(22, 27, 34, 0.5);
+        }
+
+        .section-title {
+            font-size: 15px;
+            font-weight: 700;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+
+        .section-subtitle {
+            font-size: 12px;
+            color: var(--text-muted);
+            font-family: var(--font-mono);
+        }
+
+        .table-wrapper {
+            width: 100%;
+            overflow-x: auto;
+        }
+
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            text-align: left;
+            font-size: 13px;
+        }
+
+        th {
+            background: var(--table-head-bg);
+            color: var(--text-muted);
+            font-weight: 600;
+            font-size: 12px;
+            text-transform: uppercase;
+            letter-spacing: 0.04em;
+            padding: 14px 22px;
+            border-bottom: 1px solid var(--card-border);
+        }
+
+        td {
+            padding: 16px 22px;
+            border-bottom: 1px solid var(--table-border);
+            vertical-align: middle;
+        }
+
+        tbody tr:last-child td {
+            border-bottom: none;
+        }
+
+        tbody tr {
+            transition: background 0.15s;
+        }
+
+        tbody tr:hover {
+            background: var(--table-row-hover);
+        }
+
+        .metric-cell {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            font-weight: 600;
+            color: var(--text-main);
+        }
+
+        .metric-icon {
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            width: 28px;
+            height: 28px;
+            border-radius: 6px;
+            background: rgba(88, 166, 255, 0.1);
+            color: var(--primary);
+            font-size: 14px;
+        }
+
+        .num-val {
+            font-family: var(--font-mono);
+            font-size: 16px;
+            font-weight: 700;
+            color: #79c0ff;
+        }
+
+        .num-val.green {
+            color: #56d364;
+        }
+
+        .num-val.purple {
+            color: #d2a8ff;
+        }
+
+        .panel-body {
+            padding: 20px;
+        }
+
+        .input-group {
+            display: flex;
+            gap: 10px;
+        }
+
+        input[type="text"] {
+            flex: 1;
+            background: #090c10;
+            border: 1px solid #30363d;
+            border-radius: 8px;
+            padding: 12px 16px;
+            color: #f0f6fc;
+            font-family: var(--font-mono);
+            font-size: 13px;
+            outline: none;
+            transition: border-color 0.2s;
+        }
+
+        input[type="text"]:focus {
+            border-color: var(--primary);
+            box-shadow: 0 0 0 3px var(--primary-glow);
+        }
+
+        .btn {
+            background: #238636;
+            color: #fff;
+            border: none;
+            border-radius: 8px;
+            padding: 12px 20px;
+            font-weight: 600;
+            font-size: 13px;
+            cursor: pointer;
+            transition: background 0.2s, transform 0.1s;
+            white-space: nowrap;
+        }
+
+        .btn:hover {
+            background: #2ea043;
+        }
+
+        .btn:active {
+            transform: scale(0.98);
+        }
+
+        .btn-sub {
+            background: #21262d;
+            border: 1px solid #30363d;
+            color: #c9d1d9;
+            padding: 6px 12px;
+            border-radius: 6px;
+            font-size: 12px;
+            cursor: pointer;
+            transition: all 0.2s;
+        }
+
+        .btn-sub:hover {
+            background: #30363d;
+            color: #fff;
+        }
+
+        .output-box {
+            margin-top: 14px;
+            background: #090c10;
+            border: 1px solid #30363d;
+            border-radius: 8px;
+            padding: 12px 16px;
+            font-family: var(--font-mono);
+            font-size: 13px;
+            color: #58a6ff;
+            word-break: break-all;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 12px;
+        }
+
+        .copy-btn {
+            background: #21262d;
+            border: 1px solid #30363d;
+            color: #c9d1d9;
+            padding: 6px 12px;
+            border-radius: 6px;
+            font-size: 12px;
+            cursor: pointer;
+            transition: all 0.2s;
+            flex-shrink: 0;
+        }
+
+        .copy-btn:hover {
+            background: #30363d;
+            color: #fff;
+        }
+
+        .code-inline {
+            font-family: var(--font-mono);
+            background: rgba(110, 118, 129, 0.15);
+            padding: 2px 6px;
+            border-radius: 4px;
+            color: #79c0ff;
+            font-size: 12px;
+        }
+
+        .footer {
+            text-align: center;
+            font-size: 12px;
+            color: var(--text-muted);
+            padding-bottom: 20px;
+        }
+
+        @media (max-width: 640px) {
+            .input-group {
+                flex-direction: column;
+            }
+            th, td {
+                padding: 12px 14px;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div id="login-view" class="login-card" style="display: none;">
+        <div class="login-title">🔐 仪表盘安全访问</div>
+        <div class="login-form">
+            <div>
+                <div class="form-label">账号</div>
+                <input type="text" id="login-user" class="form-input" placeholder="请输入管理员账号" autocomplete="username" />
+            </div>
+            <div>
+                <div class="form-label">密码</div>
+                <input type="password" id="login-pass" class="form-input" placeholder="请输入访问密码" autocomplete="current-password" />
+            </div>
+            <div id="login-error" class="login-error">账号或密码错误</div>
+            <button class="login-btn" onclick="doLogin()">立即登录</button>
+        </div>
+    </div>
+
+    <div class="container" id="dashboard-view" style="display: none;">
+        <header class="header">
+            <div class="brand">
+                <div class="logo-box">⚡</div>
+                <div>
+                    <h1>Emby Proxy Toolbox</h1>
+                    <p>通用流媒体动态反向代理网关 (Go Edition)</p>
+                </div>
+            </div>
+            <div class="header-actions">
+                <div class="badge-status">
+                    <span class="dot"></span>
+                    <span>网关在线</span>
+                </div>
+                <button class="logout-btn" onclick="doLogout()">退出登录</button>
+            </div>
+        </header>
+
+        <div class="section-card">
+            <div class="section-header">
+                <div class="section-title">
+                    <span>📊</span>
+                    <span>网关业务统计</span>
+                </div>
+                <div style="display: flex; align-items: center; gap: 10px;">
+                    <button class="btn-sub" onclick="testTgPush()">🔔 测试 TG 推送</button>
+                    <div class="section-subtitle" id="stat-date-badge">自动刷新中 (5s)</div>
+                </div>
+            </div>
+            <div class="table-wrapper">
+                <table>
+                    <thead>
+                        <tr>
+                            <th style="width: 36%;">统计指标</th>
+                            <th style="width: 32%;">今日数据 (Today)</th>
+                            <th style="width: 32%;">历史累计 (Total)</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        <tr>
+                            <td>
+                                <div class="metric-cell">
+                                    <span class="metric-icon">🎬</span>
+                                    <span>媒体播放次数</span>
+                                </div>
+                            </td>
+                            <td>
+                                <span class="num-val green" id="today-count">--</span>
+                            </td>
+                            <td>
+                                <span class="num-val" id="total-count">--</span>
+                            </td>
+                        </tr>
+                        <tr>
+                            <td>
+                                <div class="metric-cell">
+                                    <span class="metric-icon">🌐</span>
+                                    <span>流转网络流量</span>
+                                </div>
+                            </td>
+                            <td>
+                                <span class="num-val purple" id="today-traffic">--</span>
+                            </td>
+                            <td>
+                                <span class="num-val purple" id="total-traffic">--</span>
+                            </td>
+                        </tr>
+                    </tbody>
+                </table>
+            </div>
+        </div>
+
+        <div class="section-card">
+            <div class="section-header">
+                <div class="section-title">
+                    <span>🔗</span>
+                    <span>反代链接一键生成</span>
+                </div>
+            </div>
+            <div class="panel-body">
+                <div class="input-group">
+                    <input type="text" id="target-input" placeholder="输入原始 Emby/Jellyfin 地址，例如: http://192.168.1.100:8096 或 https://emby.mysite.com" />
+                    <button class="btn" onclick="generateLink()">生成链接</button>
+                </div>
+                <div class="output-box" id="output-wrapper" style="display: none;">
+                    <span id="output-url"></span>
+                    <button class="copy-btn" id="copy-btn" onclick="copyResult()">复制</button>
+                </div>
+            </div>
+        </div>
+
+        <div class="section-card">
+            <div class="section-header">
+                <div class="section-title">
+                    <span>📖</span>
+                    <span>接入协议与格式规范</span>
+                </div>
+            </div>
+            <div class="table-wrapper">
+                <table>
+                    <thead>
+                        <tr>
+                            <th style="width: 22%;">协议类型</th>
+                            <th style="width: 48%;">URL 路径格式</th>
+                            <th style="width: 30%;">适用场景</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        <tr>
+                            <td><strong>HTTP 回源</strong></td>
+                            <td><span class="code-inline">https://{hostname}/http://&lt;主机:端口&gt;/路径</span></td>
+                            <td>未配置 SSL 的普通 HTTP 上游（默认端口 80）</td>
+                        </tr>
+                        <tr>
+                            <td><strong>HTTPS 回源</strong></td>
+                            <td><span class="code-inline">https://{hostname}/https://&lt;主机:端口&gt;/路径</span></td>
+                            <td>已启用 SSL/TLS 的 HTTPS 上游（默认端口 443）</td>
+                        </tr>
+                        <tr>
+                            <td><strong>特性说明</strong></td>
+                            <td colspan="2">自动重写 301/302 重定向 Location 头，HLS/m3u8 实时直通无缓冲传输。</td>
+                        </tr>
+                    </tbody>
+                </table>
+            </div>
+        </div>
+
+        <footer class="footer">
+            Emby Proxy Gateway &bull; Go Edition
+        </footer>
+    </div>
+
+    <script>
+        async function checkAuthAndLoad() {
+            try {
+                const res = await fetch('/api/stats');
+                if (res.status === 401) {
+                    showLogin();
+                    return;
+                }
+                if (res.ok) {
+                    showDashboard();
+                    const data = await res.json();
+                    renderStats(data);
+                }
+            } catch (e) {
+                console.error('加载失败', e);
+            }
+        }
+
+        function showLogin() {
+            document.getElementById('login-view').style.display = 'flex';
+            document.getElementById('dashboard-view').style.display = 'none';
+        }
+
+        function showDashboard() {
+            document.getElementById('login-view').style.display = 'none';
+            document.getElementById('dashboard-view').style.display = 'flex';
+        }
+
+        function renderStats(data) {
+            document.getElementById('today-count').textContent = data.today_plays.toLocaleString() + ' 次';
+            document.getElementById('total-count').textContent = data.total_plays.toLocaleString() + ' 次';
+            document.getElementById('today-traffic').textContent = data.today_traffic_fmt;
+            document.getElementById('total-traffic').textContent = data.total_traffic_fmt;
+            if (data.date) {
+                document.getElementById('stat-date-badge').textContent = '统计日期：' + data.date;
+            }
+        }
+
+        async function doLogin() {
+            const u = document.getElementById('login-user').value.trim();
+            const p = document.getElementById('login-pass').value.trim();
+            const errEl = document.getElementById('login-error');
+            errEl.style.display = 'none';
+
+            if (!u || !p) {
+                errEl.textContent = '请输入账号和密码';
+                errEl.style.display = 'block';
+                return;
+            }
+
+            try {
+                const res = await fetch('/api/login', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({username: u, password: p})
+                });
+                const result = await res.json();
+                if (result.success) {
+                    checkAuthAndLoad();
+                } else {
+                    errEl.textContent = result.message || '账号或密码错误';
+                    errEl.style.display = 'block';
+                }
+            } catch (e) {
+                errEl.textContent = '登录网络异常';
+                errEl.style.display = 'block';
+            }
+        }
+
+        async function doLogout() {
+            try {
+                await fetch('/api/logout', {method: 'POST'});
+            } catch(e) {}
+            location.reload();
+        }
+
+        async function testTgPush() {
+            try {
+                const res = await fetch('/api/test-tg', {method: 'POST'});
+                const data = await res.json();
+                if (data.success) {
+                    alert('✅ Telegram 测试消息已发送，请在 TG 中查收！');
+                } else {
+                    alert('❌ 发送失败，请检查 Bot Token 或 Chat ID 是否正确。');
+                }
+            } catch(e) {
+                alert('网络异常');
+            }
+        }
+
+        document.getElementById('login-pass').addEventListener('keypress', function(e) {
+            if (e.key === 'Enter') doLogin();
+        });
+
+        function generateLink() {
+            const val = document.getElementById('target-input').value.trim();
+            if (!val) return;
+            
+            let clean = val;
+            let protocol = 'http';
+            
+            if (clean.startsWith('https://')) {
+                protocol = 'https';
+                clean = clean.substring(8);
+            } else if (clean.startsWith('http://')) {
+                protocol = 'http';
+                clean = clean.substring(7);
+            }
+            
+            while (clean.endsWith('/')) {
+                clean = clean.slice(0, -1);
+            }
+            
+            const origin = window.location.origin;
+            const result = origin + '/' + protocol + '://' + clean;
+            document.getElementById('output-url').textContent = result;
+            document.getElementById('output-wrapper').style.display = 'flex';
+        }
+
+        function copyResult() {
+            const url = document.getElementById('output-url').textContent;
+            navigator.clipboard.writeText(url).then(() => {
+                const btn = document.getElementById('copy-btn');
+                btn.textContent = '已复制!';
+                setTimeout(() => { btn.textContent = '复制'; }, 2000);
+            });
+        }
+
+        checkAuthAndLoad();
+        setInterval(checkAuthAndLoad, 5000);
+    </script>
+</body>
+</html>

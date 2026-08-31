@@ -1,0 +1,115 @@
+# Caddyfile 通用反代网关与统计配置示例
+
+https://your-domain.com {
+    request_body {
+        max_size 500MB
+    }
+
+    # 开启访问日志 (供 emby-proxy-stat 异步解析流量与播放)
+    log {
+        output file /var/log/caddy/emby-gateway.log {
+            roll_size 20mb
+            roll_keep 7
+            roll_keep_for 336h
+        }
+        format json
+    }
+
+    # 统计服务 API 与仪表盘反代
+    handle /api/* {
+        reverse_proxy 127.0.0.1:8999
+    }
+
+    handle / {
+        reverse_proxy 127.0.0.1:8999
+    }
+
+    # 自动重定向处理（补齐末尾斜杠）
+    @noSlashHttp path_regexp redir_http ^/http:/*([A-Za-z0-9.\-_:]+)$
+    redir @noSlashHttp /http://{re.redir_http.1}/ 308
+
+    @noSlashHttps path_regexp redir_https ^/https:/*([A-Za-z0-9.\-_:]+)$
+    redir @noSlashHttps /https://{re.redir_https.1}/ 308
+
+    # HTTP 带端口反代
+    @httpProxyWithPort path_regexp up_http_port ^/http:/*([A-Za-z0-9.\-_]+):([0-9]+)(/.*)
+    handle @httpProxyWithPort {
+        rewrite * {re.up_http_port.3}
+        reverse_proxy {
+            to {re.up_http_port.1}:{re.up_http_port.2}
+            transport http {
+                keepalive 30s
+                keepalive_idle_conns 100
+                keepalive_idle_conns_per_host 10
+            }
+            header_up Host {re.up_http_port.1}:{re.up_http_port.2}
+            header_up X-Real-IP {remote_host}
+            header_down Location ^(https?)://([^/]+)(/.*)$ https://{host}/$1://$2$3
+            header_down Location ^/(.*)$ https://{host}/http://{re.up_http_port.1}:{re.up_http_port.2}/$1
+            header_down Location ^([^/:][^:]*)$ https://{host}/http://{re.up_http_port.1}:{re.up_http_port.2}/$1
+            flush_interval -1
+        }
+    }
+
+    # HTTP 默认端口 (80) 反代
+    @httpProxyNoPort path_regexp up_http_host ^/http:/*([A-Za-z0-9.\-_]+)(/.*)
+    handle @httpProxyNoPort {
+        rewrite * {re.up_http_host.2}
+        reverse_proxy {
+            to {re.up_http_host.1}:80
+            transport http {
+                keepalive 30s
+                keepalive_idle_conns 100
+                keepalive_idle_conns_per_host 10
+            }
+            header_up Host {re.up_http_host.1}
+            header_up X-Real-IP {remote_host}
+            header_down Location ^(https?)://([^/]+)(/.*)$ https://{host}/$1://$2$3
+            header_down Location ^/(.*)$ https://{host}/http://{re.up_http_host.1}/$1
+            header_down Location ^([^/:][^:]*)$ https://{host}/http://{re.up_http_host.1}/$1
+            flush_interval -1
+        }
+    }
+
+    # HTTPS 带端口反代
+    @httpsProxyWithPort path_regexp up_https_port ^/https:/*([A-Za-z0-9.\-_]+):([0-9]+)(/.*)
+    handle @httpsProxyWithPort {
+        rewrite * {re.up_https_port.3}
+        reverse_proxy {
+            to {re.up_https_port.1}:{re.up_https_port.2}
+            transport http {
+                tls
+                keepalive 30s
+                keepalive_idle_conns 100
+                keepalive_idle_conns_per_host 10
+            }
+            header_up Host {re.up_https_port.1}:{re.up_https_port.2}
+            header_up X-Real-IP {remote_host}
+            header_down Location ^(https?)://([^/]+)(/.*)$ https://{host}/$1://$2$3
+            header_down Location ^/(.*)$ https://{host}/https://{re.up_https_port.1}:{re.up_https_port.2}/$1
+            header_down Location ^([^/:][^:]*)$ https://{host}/https://{re.up_https_port.1}:{re.up_https_port.2}/$1
+            flush_interval -1
+        }
+    }
+
+    # HTTPS 默认端口 (443) 反代
+    @httpsProxyNoPort path_regexp up_https_host ^/https:/*([A-Za-z0-9.\-_]+)(/.*)
+    handle @httpsProxyNoPort {
+        rewrite * {re.up_https_host.2}
+        reverse_proxy {
+            to {re.up_https_host.1}:443
+            transport http {
+                tls
+                keepalive 30s
+                keepalive_idle_conns 100
+                keepalive_idle_conns_per_host 10
+            }
+            header_up Host {re.up_https_host.1}
+            header_up X-Real-IP {remote_host}
+            header_down Location ^(https?)://([^/]+)(/.*)$ https://{host}/$1://$2$3
+            header_down Location ^/(.*)$ https://{host}/https://{re.up_https_host.1}/$1
+            header_down Location ^([^/:][^:]*)$ https://{host}/https://{re.up_https_host.1}/$1
+            flush_interval -1
+        }
+    }
+}
