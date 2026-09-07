@@ -248,7 +248,52 @@
         .table-wrapper {
             width: 100%;
             overflow-x: auto;
+            -webkit-overflow-scrolling: touch;
         }
+
+        .metrics-grid {
+            display: none;
+            grid-template-columns: repeat(2, 1fr);
+            gap: 12px;
+            padding: 16px;
+        }
+
+        .metric-card {
+            background: rgba(13, 17, 23, 0.7);
+            border: 1px solid var(--card-border);
+            border-radius: 12px;
+            padding: 16px 14px;
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+            transition: transform 0.15s, border-color 0.15s;
+        }
+
+        .metric-card:active {
+            transform: scale(0.98);
+            border-color: var(--primary);
+        }
+
+        .metric-card-header {
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            font-size: 12px;
+            color: var(--text-muted);
+            font-weight: 600;
+        }
+
+        .metric-num {
+            font-family: var(--font-mono);
+            font-size: 18px;
+            font-weight: 700;
+            color: #79c0ff;
+            word-break: break-word;
+        }
+
+        .metric-num.green { color: #56d364; }
+        .metric-num.blue { color: #58a6ff; }
+        .metric-num.purple { color: #d2a8ff; }
 
         table {
             width: 100%;
@@ -435,11 +480,143 @@
         }
 
         @media (max-width: 640px) {
+            body {
+                padding: 14px 10px calc(24px + env(safe-area-inset-bottom)) 10px;
+            }
+
+            .container {
+                gap: 16px;
+            }
+
+            /* 头部排版自适应 */
+            .header {
+                flex-direction: column;
+                align-items: stretch;
+                gap: 12px;
+                padding: 2px 2px;
+            }
+
+            .brand {
+                gap: 10px;
+            }
+
+            .logo-box {
+                width: 38px;
+                height: 38px;
+                font-size: 18px;
+                border-radius: 10px;
+            }
+
+            .brand h1 {
+                font-size: 17px;
+            }
+
+            .brand p {
+                font-size: 11px;
+            }
+
+            .header-actions {
+                justify-content: space-between;
+                width: 100%;
+            }
+
+            .badge-status {
+                font-size: 12px;
+                padding: 4px 10px;
+            }
+
+            .logout-btn {
+                padding: 6px 12px;
+                font-size: 12px;
+            }
+
+            /* 登录卡片移动端适配 */
+            .login-card {
+                margin: 20px auto;
+                padding: 24px 18px;
+                border-radius: 14px;
+            }
+
+            /* 输入框防 iOS Safari 自动聚焦放大 */
+            .form-input, input[type="text"] {
+                font-size: 16px !important;
+                padding: 12px 14px;
+                border-radius: 10px;
+            }
+
+            .login-btn, .btn {
+                padding: 13px 16px;
+                font-size: 14px;
+                border-radius: 10px;
+            }
+
+            /* 统计卡片：桌面表格隐藏，呈现 2x2 极简大数字卡片 */
+            .table-desktop {
+                display: none !important;
+            }
+
+            .metrics-grid {
+                display: grid;
+            }
+
+            .section-header {
+                padding: 12px 14px;
+                flex-direction: column;
+                align-items: flex-start;
+                gap: 8px;
+            }
+
+            .section-header-right {
+                width: 100%;
+                display: flex;
+                justify-content: space-between;
+                align-items: center;
+                gap: 8px;
+            }
+
+            .btn-sub {
+                padding: 6px 10px;
+                font-size: 11px;
+            }
+
+            .section-subtitle {
+                font-size: 11px;
+            }
+
+            /* 反代链接生成 */
+            .panel-body {
+                padding: 14px;
+            }
+
             .input-group {
                 flex-direction: column;
+                gap: 10px;
             }
+
+            .output-box {
+                flex-direction: column;
+                align-items: stretch;
+                gap: 10px;
+                padding: 12px;
+            }
+
+            .output-box span {
+                word-break: break-all;
+                font-size: 12px;
+                line-height: 1.5;
+            }
+
+            .copy-btn {
+                width: 100%;
+                padding: 10px;
+                font-size: 13px;
+                text-align: center;
+            }
+
+            /* 协议规范表格 */
             th, td {
-                padding: 12px 14px;
+                padding: 10px 12px;
+                font-size: 12px;
             }
         }
     </style>
@@ -485,12 +662,46 @@
                     <span>📊</span>
                     <span>网关业务统计</span>
                 </div>
-                <div style="display: flex; align-items: center; gap: 10px;">
+                <div class="section-header-right">
                     <button class="btn-sub" onclick="testTgPush()">🔔 测试 TG 推送</button>
                     <div class="section-subtitle" id="stat-date-badge">自动刷新中 (5s)</div>
                 </div>
             </div>
-            <div class="table-wrapper">
+
+            <!-- 移动端 2x2 大数字指标卡片 -->
+            <div class="metrics-grid">
+                <div class="metric-card">
+                    <div class="metric-card-header">
+                        <span>🎬</span>
+                        <span>今日播放</span>
+                    </div>
+                    <div class="metric-num green" id="today-count-m">--</div>
+                </div>
+                <div class="metric-card">
+                    <div class="metric-card-header">
+                        <span>🌐</span>
+                        <span>今日流量</span>
+                    </div>
+                    <div class="metric-num purple" id="today-traffic-m">--</div>
+                </div>
+                <div class="metric-card">
+                    <div class="metric-card-header">
+                        <span>📈</span>
+                        <span>累计播放</span>
+                    </div>
+                    <div class="metric-num blue" id="total-count-m">--</div>
+                </div>
+                <div class="metric-card">
+                    <div class="metric-card-header">
+                        <span>💾</span>
+                        <span>累计流量</span>
+                    </div>
+                    <div class="metric-num purple" id="total-traffic-m">--</div>
+                </div>
+            </div>
+
+            <!-- 桌面端表格视图 -->
+            <div class="table-wrapper table-desktop">
                 <table>
                     <thead>
                         <tr>
@@ -622,10 +833,25 @@
         }
 
         function renderStats(data) {
-            document.getElementById('today-count').textContent = data.today_plays.toLocaleString() + ' 次';
-            document.getElementById('total-count').textContent = data.total_plays.toLocaleString() + ' 次';
-            document.getElementById('today-traffic').textContent = data.today_traffic_fmt;
-            document.getElementById('total-traffic').textContent = data.total_traffic_fmt;
+            const todayPlays = data.today_plays.toLocaleString() + ' 次';
+            const totalPlays = data.total_plays.toLocaleString() + ' 次';
+
+            // 桌面端表格
+            if (document.getElementById('today-count')) {
+                document.getElementById('today-count').textContent = todayPlays;
+                document.getElementById('total-count').textContent = totalPlays;
+                document.getElementById('today-traffic').textContent = data.today_traffic_fmt;
+                document.getElementById('total-traffic').textContent = data.total_traffic_fmt;
+            }
+
+            // 移动端 2x2 指标卡片
+            if (document.getElementById('today-count-m')) {
+                document.getElementById('today-count-m').textContent = todayPlays;
+                document.getElementById('total-count-m').textContent = totalPlays;
+                document.getElementById('today-traffic-m').textContent = data.today_traffic_fmt;
+                document.getElementById('total-traffic-m').textContent = data.total_traffic_fmt;
+            }
+
             if (data.date) {
                 document.getElementById('stat-date-badge').textContent = '统计日期：' + data.date;
             }

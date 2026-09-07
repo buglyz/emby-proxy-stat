@@ -29,12 +29,12 @@ var indexHTML []byte
 var (
 	configPathFlag = flag.String("config", "/opt/emby-proxy-stat/config.json", "Path to config file")
 	dbPathFlag     = flag.String("db", "/opt/emby-proxy-stat/data/stats.db", "Path to sqlite database")
-	logPathFlag    = flag.String("log", "/var/log/caddy/emby-gateway.log", "Path to Caddy access log file")
+	logPathFlag    = flag.String("log", "/var/log/caddy/auto.fleey.de.log", "Path to Caddy access log file")
 	portFlag       = flag.Int("port", 8999, "HTTP listen port")
 )
 
 const (
-	DebounceSeconds = 300
+	DebounceSeconds = 1800 // 30分钟防抖，避免同次观影多Range请求重复计数
 )
 
 type Config struct {
@@ -58,6 +58,10 @@ type StatsResponse struct {
 	TotalBytes      int64  `json:"total_bytes"`
 	TodayTrafficFmt string `json:"today_traffic_fmt"`
 	TotalTrafficFmt string `json:"total_traffic_fmt"`
+	TodayClients    int64  `json:"today_clients"`
+	TotalClients    int64  `json:"total_clients"`
+	TodayHosts      int64  `json:"today_hosts"`
+	TotalHosts      int64  `json:"total_hosts"`
 	Date            string `json:"date"`
 	Status          string `json:"status"`
 }
@@ -67,19 +71,25 @@ type TrafficEntry struct {
 	Requests int64
 }
 
+type ActiveStream struct {
+	ItemID string
+	URI    string
+	SeenAt time.Time
+}
+
 var (
-	playPatterns = []*regexp.Regexp{
-		regexp.MustCompile(`(?i)/Videos/([a-zA-Z0-9\-_]+)/(?:stream|original|master|main)`),
-		regexp.MustCompile(`(?i)/Items/([a-zA-Z0-9\-_]+)/PlaybackInfo`),
-		regexp.MustCompile(`(?i)/Audio/([a-zA-Z0-9\-_]+)/stream`),
-		regexp.MustCompile(`(?i)/Sessions/Playing`),
-	}
-	targetHostPattern = regexp.MustCompile(`^/https?:/*([A-Za-z0-9.\-_:]+)`)
+	videoStreamPattern = regexp.MustCompile(`(?i)/Videos/([a-zA-Z0-9\-_]+)/(?:stream|original|master|main|\w+\.\w+)`)
+	audioStreamPattern = regexp.MustCompile(`(?i)/Audio/([a-zA-Z0-9\-_]+)/stream`)
+	progressPattern    = regexp.MustCompile(`(?i)/Sessions/Playing/Progress`)
+	targetHostPattern  = regexp.MustCompile(`^/https?:/*([A-Za-z0-9.\-_:]+)`)
 
 	db            *sql.DB
 	dbMu          sync.Mutex
 	cfgMu         sync.RWMutex
 	currentConfig Config
+
+	activeStreams = make(map[string]ActiveStream)
+	streamMu      sync.Mutex
 
 	recentPlays = make(map[string]int64)
 	recentMu    sync.Mutex
@@ -178,9 +188,10 @@ func initDB() error {
 	return err
 }
 
-func recordPlay(clientIP, targetHost, itemID, uri string) {
-	now := time.Now().Unix()
-	todayStr := time.Now().Format("2006-01-02")
+func recordPlay(clientIP, targetHost, itemID, uri string, logTime time.Time) {
+	now := logTime.Unix()
+	playedAtStr := logTime.Format("2006-01-02 15:04:05")
+	todayStr := logTime.Format("2006-01-02")
 	dedupKey := fmt.Sprintf("%s:%s:%s", clientIP, targetHost, itemID)
 
 	recentMu.Lock()
@@ -199,9 +210,9 @@ func recordPlay(clientIP, targetHost, itemID, uri string) {
 	dbMu.Lock()
 	defer dbMu.Unlock()
 	_, err := db.Exec(`
-		INSERT INTO play_events (play_date, client_ip, target_host, item_id, uri)
-		VALUES (?, ?, ?, ?, ?)
-	`, todayStr, clientIP, targetHost, itemID, uri)
+		INSERT INTO play_events (played_at, play_date, client_ip, target_host, item_id, uri)
+		VALUES (?, ?, ?, ?, ?, ?)
+	`, playedAtStr, todayStr, clientIP, targetHost, itemID, uri)
 	if err != nil {
 		log.Printf("[DB Error recordPlay] %v", err)
 	}
@@ -220,24 +231,69 @@ func addTraffic(dateStr string, sizeBytes int64) {
 }
 
 func flushTrafficWorker() {
-	ticker := time.NewTicker(5 * time.Second)
-	defer ticker.Stop()
-	for range ticker.C {
-		trafficMu.Lock()
-		if len(trafficBuffer) == 0 {
-			trafficMu.Unlock()
-			continue
+	defer func() {
+		if r := recover(); r != nil {
+			log.Printf("[Panic Recover] flushTrafficWorker: %v", r)
 		}
-		batch := make(map[string]TrafficEntry, len(trafficBuffer))
-		for k, v := range trafficBuffer {
-			batch[k] = *v
-		}
-		trafficBuffer = make(map[string]*TrafficEntry)
-		trafficMu.Unlock()
+	}()
 
-		dbMu.Lock()
-		tx, err := db.Begin()
-		if err == nil {
+	ticker := time.NewTicker(5 * time.Second)
+	cleanTicker := time.NewTicker(2 * time.Minute)
+	defer ticker.Stop()
+	defer cleanTicker.Stop()
+
+	for {
+		select {
+		case <-cleanTicker.C:
+			now := time.Now()
+			// 1. 清理超过 10 分钟无心跳的过期活跃流
+			streamMu.Lock()
+			for k, v := range activeStreams {
+				if now.Sub(v.SeenAt) > 10*time.Minute {
+					delete(activeStreams, k)
+				}
+			}
+			streamMu.Unlock()
+
+			// 2. 清理超过 DebounceSeconds 的防抖记录
+			recentMu.Lock()
+			nowUnix := now.Unix()
+			for k, v := range recentPlays {
+				if nowUnix-v > DebounceSeconds {
+					delete(recentPlays, k)
+				}
+			}
+			recentMu.Unlock()
+
+			// 3. 清理过期 session
+			sessionMu.Lock()
+			for k, v := range activeSessions {
+				if now.After(v) {
+					delete(activeSessions, k)
+				}
+			}
+			sessionMu.Unlock()
+
+		case <-ticker.C:
+			trafficMu.Lock()
+			if len(trafficBuffer) == 0 {
+				trafficMu.Unlock()
+				continue
+			}
+			batch := make(map[string]TrafficEntry, len(trafficBuffer))
+			for k, v := range trafficBuffer {
+				batch[k] = *v
+			}
+			trafficBuffer = make(map[string]*TrafficEntry)
+			trafficMu.Unlock()
+
+			dbMu.Lock()
+			tx, err := db.Begin()
+			if err != nil {
+				dbMu.Unlock()
+				log.Printf("[DB Error Begin] %v", err)
+				continue
+			}
 			stmt, err := tx.Prepare(`
 				INSERT INTO daily_traffic (date, bytes, requests, updated_at)
 				VALUES (?, ?, ?, CURRENT_TIMESTAMP)
@@ -246,21 +302,26 @@ func flushTrafficWorker() {
 					requests = requests + excluded.requests,
 					updated_at = CURRENT_TIMESTAMP
 			`)
-			if err == nil {
-				for dStr, entry := range batch {
-					_, _ = stmt.Exec(dStr, entry.Bytes, entry.Requests)
-				}
-				_ = stmt.Close()
+			if err != nil {
+				_ = tx.Rollback()
+				dbMu.Unlock()
+				log.Printf("[DB Error Prepare] %v", err)
+				continue
 			}
+			for dStr, entry := range batch {
+				_, _ = stmt.Exec(dStr, entry.Bytes, entry.Requests)
+			}
+			_ = stmt.Close()
 			_ = tx.Commit()
+			dbMu.Unlock()
 		}
-		dbMu.Unlock()
 	}
 }
 
 func getStats() StatsResponse {
 	todayStr := time.Now().Format("2006-01-02")
 	var todayPlays, totalPlays, todayBytes, totalBytes int64
+	var todayClients, totalClients, todayHosts, totalHosts int64
 
 	trafficMu.Lock()
 	if entry, ok := trafficBuffer[todayStr]; ok {
@@ -272,6 +333,10 @@ func getStats() StatsResponse {
 	dbMu.Lock()
 	_ = db.QueryRow("SELECT COUNT(*) FROM play_events WHERE play_date = ?", todayStr).Scan(&todayPlays)
 	_ = db.QueryRow("SELECT COUNT(*) FROM play_events").Scan(&totalPlays)
+	_ = db.QueryRow("SELECT COUNT(DISTINCT client_ip) FROM play_events WHERE play_date = ?", todayStr).Scan(&todayClients)
+	_ = db.QueryRow("SELECT COUNT(DISTINCT client_ip) FROM play_events").Scan(&totalClients)
+	_ = db.QueryRow("SELECT COUNT(DISTINCT target_host) FROM play_events WHERE play_date = ?", todayStr).Scan(&todayHosts)
+	_ = db.QueryRow("SELECT COUNT(DISTINCT target_host) FROM play_events").Scan(&totalHosts)
 
 	var dbTodayBytes sql.NullInt64
 	_ = db.QueryRow("SELECT bytes FROM daily_traffic WHERE date = ?", todayStr).Scan(&dbTodayBytes)
@@ -293,6 +358,10 @@ func getStats() StatsResponse {
 		TotalBytes:      totalBytes,
 		TodayTrafficFmt: formatBytes(todayBytes),
 		TotalTrafficFmt: formatBytes(totalBytes),
+		TodayClients:    todayClients,
+		TotalClients:    totalClients,
+		TodayHosts:      todayHosts,
+		TotalHosts:      totalHosts,
 		Date:            todayStr,
 		Status:          "online",
 	}
@@ -323,10 +392,21 @@ func sendTelegramMessage(text string) bool {
 		return false
 	}
 	defer resp.Body.Close()
-	return resp.StatusCode == http.StatusOK
+	if resp.StatusCode != http.StatusOK {
+		respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 1024))
+		log.Printf("[TG Error Status %d] %s", resp.StatusCode, string(respBody))
+		return false
+	}
+	return true
 }
 
 func telegramSchedulerWorker() {
+	defer func() {
+		if r := recover(); r != nil {
+			log.Printf("[Panic Recover] telegramSchedulerWorker: %v", r)
+		}
+	}()
+
 	var lastSentDate string
 	ticker := time.NewTicker(30 * time.Second)
 	defer ticker.Stop()
@@ -343,16 +423,26 @@ func telegramSchedulerWorker() {
 			currentHM := now.Format("15:04")
 			if currentHM == targetTime && lastSentDate != todayStr {
 				stats := getStats()
+				nowStr := now.Format("2006-01-02 15:04:05")
 				msg := fmt.Sprintf(
-					"📊 <b>Emby 网关每日数据播报 (Go Edition)</b>\n\n"+
-						"📅 <b>统计日期</b>：%s\n"+
-						"🎬 <b>今日播放</b>：<code>%d</code> 次\n"+
-						"🌐 <b>今日流量</b>：<code>%s</code>\n\n"+
-						"📈 <b>累计播放</b>：<code>%d</code> 次\n"+
-						"💾 <b>累计流量</b>：<code>%s</code>\n\n"+
-						"⚡ <b>网关状态</b>：Go 核心引擎运行正常",
-					todayStr, stats.TodayPlays, stats.TodayTrafficFmt,
-					stats.TotalPlays, stats.TotalTrafficFmt,
+					"✨ <b>Emby 网关运行日报</b>\n"+
+						"━━━━━━━━━━━━━━━━━━\n"+
+						"📅 <b>统计日期</b>：<code>%s</code>\n"+
+						"⏰ <b>播报时间</b>：<code>%s</code>\n\n"+
+						"📊 <b>【今日运营数据】</b>\n"+
+						"• 🎬 <b>有效播放</b>：<code>%d</code> 次\n"+
+						"• 🌐 <b>流转流量</b>：<code>%s</code>\n"+
+						"• 👥 <b>活跃设备</b>：<code>%d</code> 个独立客户端\n"+
+						"• 🖥️ <b>上游节点</b>：<code>%d</code> 个目标服务器\n\n"+
+						"📈 <b>【历史全量汇总】</b>\n"+
+						"• 🎬 <b>累计播放</b>：<code>%d</code> 次\n"+
+						"• 💾 <b>累计总流量</b>：<code>%s</code>\n"+
+						"• 📱 <b>累计服务设备</b>：<code>%d</code> 个\n\n"+
+						"<blockquote>⚡ <b>网关状态</b>：运行正常 (Go Edition)\n"+
+						"🔗 <b>控制面板</b>：<a href=\"https://auto.fleey.de\">auto.fleey.de</a></blockquote>",
+					todayStr, nowStr,
+					stats.TodayPlays, stats.TodayTrafficFmt, stats.TodayClients, stats.TodayHosts,
+					stats.TotalPlays, stats.TotalTrafficFmt, stats.TotalClients,
 				)
 				if sendTelegramMessage(msg) {
 					lastSentDate = todayStr
@@ -364,6 +454,7 @@ func telegramSchedulerWorker() {
 }
 
 type CaddyLogEntry struct {
+	TS      float64 `json:"ts"`
 	Request struct {
 		ClientIP string              `json:"client_ip"`
 		RemoteIP string              `json:"remote_ip"`
@@ -372,18 +463,6 @@ type CaddyLogEntry struct {
 	} `json:"request"`
 	Status int   `json:"status"`
 	Size   int64 `json:"size"`
-}
-
-func matchPlayEvent(uri string) string {
-	for _, pattern := range playPatterns {
-		matches := pattern.FindStringSubmatch(uri)
-		if len(matches) > 1 {
-			return matches[1]
-		} else if len(matches) == 1 {
-			return "session"
-		}
-	}
-	return ""
 }
 
 func extractTargetHost(uri string) string {
@@ -395,6 +474,16 @@ func extractTargetHost(uri string) string {
 }
 
 func logTailWorker() {
+	defer func() {
+		if r := recover(); r != nil {
+			log.Printf("[Panic Recover] logTailWorker: %v", r)
+			time.Sleep(1 * time.Second)
+			go logTailWorker() // 崩溃自愈重启
+		}
+	}()
+
+	isInitialOpen := true
+
 	for {
 		activeLogPath := getEffectiveLogPath()
 		file, err := os.Open(activeLogPath)
@@ -410,7 +499,11 @@ func logTailWorker() {
 			continue
 		}
 
-		_, _ = file.Seek(0, io.SeekEnd)
+		// 仅在首次启动时 Seek 到末尾；若因轮转/截断 reopen 新文件，从 offset 0 完整读取
+		if isInitialOpen {
+			_, _ = file.Seek(0, io.SeekEnd)
+			isInitialOpen = false
+		}
 		reader := bufio.NewReader(file)
 
 		for {
@@ -419,7 +512,8 @@ func logTailWorker() {
 				if err == io.EOF {
 					time.Sleep(200 * time.Millisecond)
 					newFi, statErr := os.Stat(activeLogPath)
-					if statErr != nil || !os.SameFile(fi, newFi) {
+					// 检测文件轮转（inode改变）或外部截断（文件缩小）
+					if statErr != nil || !os.SameFile(fi, newFi) || newFi.Size() < fi.Size() {
 						file.Close()
 						break
 					}
@@ -429,17 +523,32 @@ func logTailWorker() {
 				break
 			}
 
+			// 更新已记录的 stat
+			if currFi, statErr := file.Stat(); statErr == nil {
+				fi = currFi
+			}
+
 			var entry CaddyLogEntry
 			if jsonErr := json.Unmarshal(line, &entry); jsonErr != nil {
 				continue
 			}
 
 			uri := entry.Request.URI
-			if strings.HasPrefix(uri, "/api/") || uri == "/" || uri == "/index.html" {
+			if strings.HasPrefix(uri, "/api/") || uri == "/" || uri == "/index.html" || uri == "/favicon.ico" {
 				continue
 			}
 
-			todayStr := time.Now().Format("2006-01-02")
+			// 优先使用日志内的精确时间戳
+			var logTime time.Time
+			if entry.TS > 0 {
+				sec := int64(entry.TS)
+				nsec := int64((entry.TS - float64(sec)) * 1e9)
+				logTime = time.Unix(sec, nsec)
+			} else {
+				logTime = time.Now()
+			}
+			todayStr := logTime.Format("2006-01-02")
+
 			if entry.Size > 0 {
 				addTraffic(todayStr, entry.Size)
 			}
@@ -448,18 +557,47 @@ func logTailWorker() {
 				continue
 			}
 
-			itemID := matchPlayEvent(uri)
-			if itemID != "" {
-				clientIP := entry.Request.ClientIP
-				if clientIP == "" {
-					clientIP = entry.Request.RemoteIP
+			clientIP := entry.Request.ClientIP
+			if clientIP == "" {
+				clientIP = entry.Request.RemoteIP
+			}
+			if xff, ok := entry.Request.Headers["X-Forwarded-For"]; ok && len(xff) > 0 {
+				clientIP = strings.TrimSpace(strings.Split(xff[0], ",")[0])
+			}
+			clientIP = strings.Split(clientIP, ":")[0]
+			targetHost := extractTargetHost(uri)
+			pairKey := clientIP + ":" + targetHost
+
+			// 1. 拦截媒体流请求，绑定当前活跃视频
+			if vMatches := videoStreamPattern.FindStringSubmatch(uri); len(vMatches) > 1 {
+				streamMu.Lock()
+				activeStreams[pairKey] = ActiveStream{
+					ItemID: vMatches[1],
+					URI:    uri,
+					SeenAt: time.Now(),
 				}
-				if xff, ok := entry.Request.Headers["X-Forwarded-For"]; ok && len(xff) > 0 {
-					clientIP = strings.TrimSpace(strings.Split(xff[0], ",")[0])
+				streamMu.Unlock()
+			} else if aMatches := audioStreamPattern.FindStringSubmatch(uri); len(aMatches) > 1 {
+				streamMu.Lock()
+				activeStreams[pairKey] = ActiveStream{
+					ItemID: aMatches[1],
+					URI:    uri,
+					SeenAt: time.Now(),
 				}
-				clientIP = strings.Split(clientIP, ":")[0]
-				targetHost := extractTargetHost(uri)
-				recordPlay(clientIP, targetHost, itemID, uri)
+				streamMu.Unlock()
+			}
+
+			// 2. 方案 B：仅当收到客户端播放进度心跳时，判定有效播放（已播放 > 5s，达到第一个心跳上报点）
+			if progressPattern.MatchString(uri) {
+				streamMu.Lock()
+				as, hasStream := activeStreams[pairKey]
+				streamMu.Unlock()
+
+				if hasStream && time.Since(as.SeenAt) <= 120*time.Second {
+					recordPlay(clientIP, targetHost, as.ItemID, as.URI, logTime)
+				} else {
+					recordPlay(clientIP, targetHost, "session", uri, logTime)
+				}
 			}
 		}
 	}
@@ -495,7 +633,7 @@ func handleLogin(w http.ResponseWriter, r *http.Request) {
 		Username string `json:"username"`
 		Password string `json:"password"`
 	}
-	body, err := io.ReadAll(r.Body)
+	body, err := io.ReadAll(io.LimitReader(r.Body, 1048576)) // 限制 1MB
 	if err != nil {
 		http.Error(w, "Bad Request", http.StatusBadRequest)
 		return
@@ -571,17 +709,27 @@ func handleTestTG(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	stats := getStats()
-	todayStr := time.Now().Format("2006-01-02")
+	now := time.Now()
+	nowStr := now.Format("2006-01-02 15:04:05")
 	msg := fmt.Sprintf(
-		"🔔 <b>Emby 网关 Telegram 连通测试 (Go Edition)</b>\n\n"+
-			"📅 <b>当前日期</b>：%s\n"+
-			"🎬 <b>今日播放</b>：<code>%d</code> 次\n"+
-			"🌐 <b>今日流量</b>：<code>%s</code>\n"+
-			"📈 <b>累计播放</b>：<code>%d</code> 次\n"+
-			"💾 <b>累计流量</b>：<code>%s</code>\n\n"+
-			"⚡ <b>状态</b>：Go 核心引擎运行正常，每日 23:59 自动推送！",
-		todayStr, stats.TodayPlays, stats.TodayTrafficFmt,
-		stats.TotalPlays, stats.TotalTrafficFmt,
+		"🔔 <b>Emby 网关 Telegram 连通测试</b>\n"+
+			"━━━━━━━━━━━━━━━━━━\n"+
+			"📅 <b>测试时间</b>：<code>%s</code>\n\n"+
+			"📊 <b>【实时网关概览】</b>\n"+
+			"• 🎬 <b>今日播放</b>：<code>%d</code> 次\n"+
+			"• 🌐 <b>今日流量</b>：<code>%s</code>\n"+
+			"• 👥 <b>活跃设备</b>：<code>%d</code> 个独立客户端\n"+
+			"• 🖥️ <b>覆盖节点</b>：<code>%d</code> 个目标服务器\n\n"+
+			"📈 <b>【历史全量汇总】</b>\n"+
+			"• 🎬 <b>累计播放</b>：<code>%d</code> 次\n"+
+			"• 💾 <b>累计总流量</b>：<code>%s</code>\n"+
+			"• 📱 <b>累计服务设备</b>：<code>%d</code> 个\n\n"+
+			"<blockquote>🟢 <b>引擎核心</b>：Go Core (Zero-CGO)\n"+
+			"⏰ <b>每日播报</b>：已启用，将在 23:59 自动推送\n"+
+			"🔗 <b>管理控制台</b>：<a href=\"https://auto.fleey.de\">auto.fleey.de</a></blockquote>",
+		nowStr,
+		stats.TodayPlays, stats.TodayTrafficFmt, stats.TodayClients, stats.TodayHosts,
+		stats.TotalPlays, stats.TotalTrafficFmt, stats.TotalClients,
 	)
 	ok := sendTelegramMessage(msg)
 	w.Header().Set("Content-Type", "application/json")
@@ -623,10 +771,11 @@ func main() {
 	})
 
 	server := &http.Server{
-		Addr:         fmt.Sprintf("127.0.0.1:%d", *portFlag),
-		Handler:      mux,
-		ReadTimeout:  15 * time.Second,
-		WriteTimeout: 15 * time.Second,
+		Addr:              fmt.Sprintf("127.0.0.1:%d", *portFlag),
+		Handler:           mux,
+		ReadHeaderTimeout: 5 * time.Second,
+		ReadTimeout:       15 * time.Second,
+		WriteTimeout:      15 * time.Second,
 	}
 
 	log.Printf("[Go Stats Server] Running on 127.0.0.1:%d", *portFlag)
