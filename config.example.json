@@ -1,13 +1,14 @@
 {
   "auth": {
     "username": "admin",
-    "password": "your_strong_password"
+    "password_hash": ""
   },
   "telegram": {
-    "enabled": true,
+    "enabled": false,
     "bot_token": "123456789:ABCdefGHIjklmn...",
     "chat_id": "123456789",
     "daily_report_time": "23:59"
   },
-  "caddy_log_path": "/var/log/caddy/emby-gateway.log"
+  "caddy_log_path": "/var/log/caddy/emby-gateway.log",
+  "public_url": "https://your-domain.com"
 }

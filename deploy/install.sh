@@ -27,6 +27,11 @@ fi
 echo "==> 1. 创建服务与日志目录..."
 mkdir -p "${INSTALL_DIR}/data"
 mkdir -p /var/log/caddy
+if ! id -u emby-proxy-stat >/dev/null 2>&1; then
+    useradd --system --home-dir "${INSTALL_DIR}" --shell /usr/sbin/nologin emby-proxy-stat
+fi
+chown emby-proxy-stat:emby-proxy-stat "${INSTALL_DIR}/data"
+chmod 750 "${INSTALL_DIR}/data"
 chown -R caddy:caddy /var/log/caddy 2>/dev/null || true
 
 echo "==> 2. 配置向导 (交互式设置)..."
@@ -40,8 +45,14 @@ else
     RECONFIGURE="y"
 fi
 
+if [ "${RECONFIGURE}" != "y" ] && grep -Eq '"password"[[:space:]]*:' "${CONFIG_FILE}" 2>/dev/null; then
+    echo "⚠️ 检测到旧版明文密码配置，必须重新设置认证信息后才能继续。"
+    RECONFIGURE="y"
+fi
+
 INPUT_DOMAIN="auto.example.com"
 CADDY_LOG_FILE="/var/log/caddy/auto.example.com.log"
+CONFIG_PENDING=false
 
 if [[ "$RECONFIGURE" =~ ^[Yy]$ ]]; then
     echo ""
@@ -53,12 +64,20 @@ if [[ "$RECONFIGURE" =~ ^[Yy]$ ]]; then
         fi
         echo "❌ 域名不能为空，请重新输入！"
     done
+    if [[ ! "${INPUT_DOMAIN}" =~ ^[A-Za-z0-9]([A-Za-z0-9.-]*[A-Za-z0-9])?$ ]]; then
+        echo "❌ 域名格式无效，只允许字母、数字、点和短横线。"
+        exit 1
+    fi
     CADDY_LOG_FILE="/var/log/caddy/${INPUT_DOMAIN}.log"
 
     echo ""
     echo "--- [2/3] 仪表盘安全认证设置 ---"
     read -r -p "请输入管理员账号 (默认: admin): " INPUT_USER
     INPUT_USER=${INPUT_USER:-admin}
+    if [[ ! "${INPUT_USER}" =~ ^[A-Za-z0-9._-]{1,64}$ ]]; then
+        echo "❌ 管理员账号只能包含字母、数字、点、下划线和短横线。"
+        exit 1
+    fi
 
     while true; do
         read -r -s -p "请输入访问密码 (必填): " INPUT_PASS
@@ -88,6 +107,10 @@ if [[ "$RECONFIGURE" =~ ^[Yy]$ ]]; then
             fi
             echo "❌ Bot Token 不能为空！"
         done
+        if [[ ! "${TG_BOT_TOKEN}" =~ ^[0-9]+:[A-Za-z0-9_-]+$ ]]; then
+            echo "❌ Bot Token 格式无效。"
+            exit 1
+        fi
 
         while true; do
             read -r -p "请输入接收通知的 Chat ID (个人/群组/频道): " TG_CHAT_ID
@@ -96,29 +119,19 @@ if [[ "$RECONFIGURE" =~ ^[Yy]$ ]]; then
             fi
             echo "❌ Chat ID 不能为空！"
         done
+        if [[ ! "${TG_CHAT_ID}" =~ ^-?[0-9]+$|^@[A-Za-z0-9_]{5,}$ ]]; then
+            echo "❌ Chat ID 格式无效。"
+            exit 1
+        fi
 
         read -r -p "每日自动推送时间 (24小时制 HH:MM, 默认: 23:59): " INPUT_TIME
         TG_REPORT_TIME=${INPUT_TIME:-23:59}
+        if [[ ! "${TG_REPORT_TIME}" =~ ^([01][0-9]|2[0-3]):[0-5][0-9]$ ]]; then
+            echo "❌ 推送时间必须是 HH:MM 格式。"
+            exit 1
+        fi
     fi
-
-    # 写入 JSON 配置文件
-    cat <<EOF > "${CONFIG_FILE}"
-{
-  "auth": {
-    "username": "${INPUT_USER}",
-    "password": "${INPUT_PASS}"
-  },
-  "telegram": {
-    "enabled": ${TG_ENABLED},
-    "bot_token": "${TG_BOT_TOKEN}",
-    "chat_id": "${TG_CHAT_ID}",
-    "daily_report_time": "${TG_REPORT_TIME}"
-  },
-  "caddy_log_path": "${CADDY_LOG_FILE}"
-}
-EOF
-    chmod 600 "${CONFIG_FILE}"
-    echo "✅ 配置文件已保存至: ${CONFIG_FILE} (权限 600)"
+    CONFIG_PENDING=true
 fi
 
 echo "==> 3. Caddy 站点配置处理..."
@@ -157,80 +170,10 @@ https://${INPUT_DOMAIN} {
     @noSlashHttps path_regexp redir_https ^/https:/*([A-Za-z0-9.\-_:]+)$
     redir @noSlashHttps /https://{re.redir_https.1}/ 308
 
-    @httpProxyWithPort path_regexp up_http_port ^/http:/*([A-Za-z0-9.\-_]+):([0-9]+)(/.*)
-    handle @httpProxyWithPort {
-        rewrite * {re.up_http_port.3}
-        reverse_proxy {
-            to {re.up_http_port.1}:{re.up_http_port.2}
-            transport http {
-                keepalive 30s
-                keepalive_idle_conns 100
-                keepalive_idle_conns_per_host 10
-            }
-            header_up Host {re.up_http_port.1}:{re.up_http_port.2}
-            header_up X-Real-IP {remote_host}
-            header_down Location ^(https?)://([^/]+)(/.*)$ https://${INPUT_DOMAIN}/\$1://\$2\$3
-            header_down Location ^/(.*)$ https://${INPUT_DOMAIN}/http://{re.up_http_port.1}:{re.up_http_port.2}/\$1
-            header_down Location ^([^/:][^:]*)$ https://${INPUT_DOMAIN}/http://{re.up_http_port.1}:{re.up_http_port.2}/\$1
-            flush_interval -1
-        }
-    }
-
-    @httpProxyNoPort path_regexp up_http_host ^/http:/*([A-Za-z0-9.\-_]+)(/.*)
-    handle @httpProxyNoPort {
-        rewrite * {re.up_http_host.2}
-        reverse_proxy {
-            to {re.up_http_host.1}:80
-            transport http {
-                keepalive 30s
-                keepalive_idle_conns 100
-                keepalive_idle_conns_per_host 10
-            }
-            header_up Host {re.up_http_host.1}
-            header_up X-Real-IP {remote_host}
-            header_down Location ^(https?)://([^/]+)(/.*)$ https://${INPUT_DOMAIN}/\$1://\$2\$3
-            header_down Location ^/(.*)$ https://${INPUT_DOMAIN}/http://{re.up_http_host.1}/\$1
-            header_down Location ^([^/:][^:]*)$ https://${INPUT_DOMAIN}/http://{re.up_http_host.1}/\$1
-            flush_interval -1
-        }
-    }
-
-    @httpsProxyWithPort path_regexp up_https_port ^/https:/*([A-Za-z0-9.\-_]+):([0-9]+)(/.*)
-    handle @httpsProxyWithPort {
-        rewrite * {re.up_https_port.3}
-        reverse_proxy {
-            to {re.up_https_port.1}:{re.up_https_port.2}
-            transport http {
-                tls
-                keepalive 30s
-                keepalive_idle_conns 100
-                keepalive_idle_conns_per_host 10
-            }
-            header_up Host {re.up_https_port.1}:{re.up_https_port.2}
-            header_up X-Real-IP {remote_host}
-            header_down Location ^(https?)://([^/]+)(/.*)$ https://${INPUT_DOMAIN}/\$1://\$2\$3
-            header_down Location ^/(.*)$ https://${INPUT_DOMAIN}/https://{re.up_https_port.1}:{re.up_https_port.2}/\$1
-            header_down Location ^([^/:][^:]*)$ https://${INPUT_DOMAIN}/https://{re.up_https_port.1}:{re.up_https_port.2}/\$1
-            flush_interval -1
-        }
-    }
-
-    @httpsProxyNoPort path_regexp up_https_host ^/https:/*([A-Za-z0-9.\-_]+)(/.*)
-    handle @httpsProxyNoPort {
-        rewrite * {re.up_https_host.2}
-        reverse_proxy {
-            to {re.up_https_host.1}:443
-            transport http {
-                tls
-                keepalive 30s
-                keepalive_idle_conns 100
-                keepalive_idle_conns_per_host 10
-            }
-            header_up Host {re.up_https_host.1}
-            header_up X-Real-IP {remote_host}
-            header_down Location ^(https?)://([^/]+)(/.*)$ https://${INPUT_DOMAIN}/\$1://\$2\$3
-            header_down Location ^/(.*)$ https://${INPUT_DOMAIN}/https://{re.up_https_host.1}/\$1
-            header_down Location ^([^/:][^:]*)$ https://${INPUT_DOMAIN}/https://{re.up_https_host.1}/\$1
+    # 动态回源交给 Go proxy guard；8998 会解析目标并拒绝内网、回环、链路本地及保留地址。
+    @dynamicProxy path_regexp dynamic_proxy ^/(http|https):/*([A-Za-z0-9.\-_]+)(:[0-9]+)?(/.*)
+    handle @dynamicProxy {
+        reverse_proxy 127.0.0.1:8998 {
             flush_interval -1
         }
     }
@@ -330,7 +273,41 @@ if [ "${INSTALLED_BIN}" = false ]; then
     exit 1
 fi
 
-echo "==> 5. 配置并启动 systemd 服务..."
+if [ "${CONFIG_PENDING}" = true ]; then
+    echo "==> 5. 生成密码哈希并保存配置..."
+    PASSWORD_HASH="$(printf '%s' "${INPUT_PASS}" | "${INSTALL_DIR}/emby-proxy-stat" -generate-password-hash)"
+    if [ -z "${PASSWORD_HASH}" ]; then
+        echo "❌ 无法生成密码哈希，拒绝写入不安全的明文配置。" 1>&2
+        exit 1
+    fi
+    umask 077
+    cat <<EOF > "${CONFIG_FILE}"
+{
+  "auth": {
+    "username": "${INPUT_USER}",
+    "password_hash": "${PASSWORD_HASH}"
+  },
+  "telegram": {
+    "enabled": ${TG_ENABLED},
+    "bot_token": "${TG_BOT_TOKEN}",
+    "chat_id": "${TG_CHAT_ID}",
+    "daily_report_time": "${TG_REPORT_TIME}"
+  },
+  "caddy_log_path": "${CADDY_LOG_FILE}",
+  "public_url": "https://${INPUT_DOMAIN}"
+}
+EOF
+    unset INPUT_PASS PASSWORD_HASH
+fi
+
+if [ ! -f "${CONFIG_FILE}" ]; then
+    echo "❌ 配置文件不存在: ${CONFIG_FILE}" 1>&2
+    exit 1
+fi
+chown root:emby-proxy-stat "${CONFIG_FILE}"
+chmod 640 "${CONFIG_FILE}"
+
+echo "==> 6. 配置并启动 systemd 服务..."
 if [ -f "./deploy/emby-proxy-stat.service" ]; then
     cp ./deploy/emby-proxy-stat.service "${SYSTEMD_FILE}"
 elif [ ! -f "${SYSTEMD_FILE}" ]; then
@@ -341,11 +318,30 @@ After=network.target caddy.service
 
 [Service]
 Type=simple
-User=root
+User=emby-proxy-stat
+Group=emby-proxy-stat
+SupplementaryGroups=caddy
 WorkingDirectory=${INSTALL_DIR}
 ExecStart=${INSTALL_DIR}/emby-proxy-stat
 Restart=always
 RestartSec=3
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectKernelLogs=true
+ProtectControlGroups=true
+ProtectClock=true
+RestrictSUIDSGID=true
+RestrictNamespaces=true
+RestrictRealtime=true
+LockPersonality=true
+MemoryDenyWriteExecute=true
+ReadWritePaths=${INSTALL_DIR}/data
 
 [Install]
 WantedBy=multi-user.target
@@ -356,7 +352,7 @@ systemctl daemon-reload
 systemctl enable --now emby-proxy-stat
 systemctl restart emby-proxy-stat
 
-echo "==> 6. 配置 logrotate 日志轮转..."
+echo "==> 7. 配置 logrotate 日志轮转..."
 if [ -f "./deploy/logrotate.caddy" ]; then
     cp ./deploy/logrotate.caddy "${LOGROTATE_FILE}"
     chmod 644 "${LOGROTATE_FILE}"

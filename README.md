@@ -25,7 +25,8 @@
   - **常驻 Goroutine Panic 自愈**：日志监听、流量批量刷盘与 TG 定时任务均内置 Panic Recover 与自愈重启机制；
   - **无感日志滚动追踪**：首次启动 Seek 到末尾，轮转与截断重开后从文件头读取，绝不丢日志；
   - **内存防泄漏治理**：内置周期性定时清理引擎，自动回收超时的活跃流字典、防抖缓存及过期 Session；
-  - **HTTP 攻击防护**：具备 1MB Body 读取限额与 5 秒请求头超时限制（防御 Slowloris 慢速连接攻击）。
+  - **HTTP 攻击防护**：具备 1MB Body 读取限额与 5 秒请求头超时限制（防御 Slowloris 慢速连接攻击）；动态回源统一经过 proxy guard，拒绝回环、私网、链路本地、组播、未指定及 CGNAT 地址，并防 DNS 重绑定。
+  - **认证安全**：密码默认使用 PBKDF2-SHA256 哈希保存，登录失败限速，Cookie 启用 `HttpOnly`、`Secure` 与 `SameSite=Lax`。
 - ⚡ **极致轻量 & 高性能**：
   - 内存常驻占用仅 **1.5 MB ~ 3.5 MB**，CPU 消耗常年趋近于 0；
   - 采用 **内存实时原子累加 + 批量异步落库 (SQLite WAL 模式)**，消除高频磁盘 I/O 开销。
@@ -39,7 +40,7 @@
                │
                ▼
 [ Caddy 2 反向代理网关 (auto.your-domain.com) ]
-   ├── 媒体流/API 代理 ──────► [ 原始上游 Emby 实例 (动态回源) ]
+   ├── 媒体流/API 代理 ──────► [ Go proxy guard (127.0.0.1:8998) ] ──────► [ 外部 Emby 实例 ]
    ├── 结构化访问日志 ──────► [ /var/log/caddy/<domain>.log ]
    └── 管理控制台 (/) ──────► [ emby-proxy-stat 后台服务 (127.0.0.1:8999) ]
                                     │
@@ -60,7 +61,11 @@ emby-proxy-stat/
 │       └── release.yml           # GitHub Actions 自动化多架构跨平台构建
 ├── cmd/
 │   └── emby-proxy-stat/
-│       ├── main.go               # Go 核心服务源码 (嵌入式 WebUI、API、LogTailer)
+│       ├── main.go               # 配置、状态与共享类型
+│       ├── app_main.go           # HTTP 服务启动与路由
+│       ├── proxy_guard.go        # 动态回源与内网地址防护
+│       ├── auth.go / handlers.go # 认证与 HTTP API
+│       └── ...                   # 统计、日志、Telegram 与持久化模块
 │       └── index.html            # 仪表盘前端界面 (支持桌面端表格与移动端 2x2 卡片)
 ├── web/
 │   └── index.html                # 前端静态源码备份
@@ -110,13 +115,25 @@ CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -ldflags="-s -w" -o emby-proxy-st
 # 2. 准备配置文件
 mkdir -p /opt/emby-proxy-stat/data
 cp config.example.json /opt/emby-proxy-stat/config.json
-chmod 600 /opt/emby-proxy-stat/config.json
+id -u emby-proxy-stat >/dev/null 2>&1 || sudo useradd --system --home-dir /opt/emby-proxy-stat --shell /usr/sbin/nologin emby-proxy-stat
+sudo chown root:emby-proxy-stat /opt/emby-proxy-stat/config.json
+sudo chmod 640 /opt/emby-proxy-stat/config.json
 
 # 3. 注册并启动 systemd 服务
 cp deploy/emby-proxy-stat.service /etc/systemd/system/
 systemctl daemon-reload
 systemctl enable --now emby-proxy-stat
 ```
+
+`config.json` 必须填写 `auth.username` 与 `auth.password_hash`；不要再写入明文 `auth.password`。可在编译后的二进制旁生成哈希：
+
+```bash
+read -r -s PASSWORD
+printf '%s' "$PASSWORD" | ./emby-proxy-stat -generate-password-hash
+unset PASSWORD
+```
+
+将输出的完整值填入 `password_hash` 后再启动服务。动态回源必须使用 `caddy/Caddyfile` 中转发到 `127.0.0.1:8998` 的规则；`8998` 只监听回环地址，且会拒绝解析到内网或其他保留地址的目标，公网地址不做限制。
 
 ---
 

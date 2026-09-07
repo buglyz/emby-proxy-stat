@@ -4,11 +4,30 @@ After=network.target caddy.service
 
 [Service]
 Type=simple
-User=root
+User=emby-proxy-stat
+Group=emby-proxy-stat
+SupplementaryGroups=caddy
 WorkingDirectory=/opt/emby-proxy-stat
 ExecStart=/opt/emby-proxy-stat/emby-proxy-stat
 Restart=always
 RestartSec=3
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectKernelLogs=true
+ProtectControlGroups=true
+ProtectClock=true
+RestrictSUIDSGID=true
+RestrictNamespaces=true
+RestrictRealtime=true
+LockPersonality=true
+MemoryDenyWriteExecute=true
+ReadWritePaths=/opt/emby-proxy-stat/data
 
 [Install]
 WantedBy=multi-user.target
