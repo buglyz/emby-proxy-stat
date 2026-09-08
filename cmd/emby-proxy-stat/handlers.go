@@ -157,15 +157,31 @@ func handleTestTG(w http.ResponseWriter, r *http.Request) {
 			"• 📱 <b>累计服务设备</b>：<code>%d</code> 个\n\n"+
 			"<blockquote>🟢 <b>引擎核心</b>：Go Core (Zero-CGO)\n"+
 			"⏰ <b>每日播报</b>：按配置时间自动推送\n"+
-			"🔗 <b>管理控制台</b>：<a href=\"%s\">%s</a></blockquote>",
+			"🔗 <b>管理控制台</b>：<a href=\"https://auto.fleey.de\">auto.fleey.de</a></blockquote>",
 		now.Format("2006-01-02 15:04:05"),
 		stats.TodayPlays, stats.TodayTrafficFmt, stats.TodayClients, stats.TodayHosts,
 		stats.TotalPlays, stats.TotalTrafficFmt, stats.TotalClients,
-		publicURL(), publicURL(),
 	)
 	if !sendTelegramMessage(msg) {
 		writeJSON(w, http.StatusBadGateway, map[string]interface{}{"success": false, "message": "Telegram 推送失败"})
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]bool{"success": true})
+}
+func handleClients(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "Method Not Allowed"})
+		return
+	}
+	if !isAuthenticated(r) {
+		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "Unauthorized"})
+		return
+	}
+	clients, err := getTodayClients()
+	if err != nil {
+		log.Printf("[Clients Error] %v", err)
+		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "客户端查询服务暂不可用"})
+		return
+	}
+	writeJSON(w, http.StatusOK, clients)
 }

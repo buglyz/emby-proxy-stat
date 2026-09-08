@@ -43,6 +43,7 @@ func main() {
 	mux.HandleFunc("/api/logout", handleLogout)
 	mux.HandleFunc("/api/stats", handleStats)
 	mux.HandleFunc("/api/test-tg", handleTestTG)
+	mux.HandleFunc("/api/clients", handleClients)
 	mux.HandleFunc("/api/health", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet {
 			writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "Method Not Allowed"})
@@ -75,3 +76,4 @@ func main() {
 		log.Fatalf("[Fatal] Server error: %v", err)
 	}
 }
+

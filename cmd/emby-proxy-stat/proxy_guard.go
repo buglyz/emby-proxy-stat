@@ -108,7 +108,7 @@ func handleProxyGuard(w http.ResponseWriter, r *http.Request) {
 			}
 		},
 		ModifyResponse: func(response *http.Response) error {
-			return rewriteProxyLocation(response, target, r.Host)
+			return rewriteProxyLocation(response, target)
 		},
 		ErrorHandler: func(writer http.ResponseWriter, _ *http.Request, proxyErr error) {
 			log.Printf("[Proxy Error] host=%s err=%v", target.hostname, proxyErr)
@@ -195,7 +195,7 @@ func dialPinnedProxyAddress(ctx context.Context, network, _ string) (net.Conn, e
 	return dialer.DialContext(ctx, network, dialAddress)
 }
 
-func rewriteProxyLocation(response *http.Response, target proxyTarget, gatewayHost string) error {
+func rewriteProxyLocation(response *http.Response, target proxyTarget) error {
 	location := response.Header.Get("Location")
 	if location == "" {
 		return nil
@@ -206,23 +206,20 @@ func rewriteProxyLocation(response *http.Response, target proxyTarget, gatewayHo
 		}
 	}
 	if parsed, err := url.Parse(location); err == nil && parsed.IsAbs() && (parsed.Scheme == "http" || parsed.Scheme == "https") {
-		if strings.EqualFold(parsed.Host, gatewayHost) {
+		if strings.EqualFold(parsed.Hostname(), "auto.fleey.de") {
 			return nil
 		}
-		response.Header.Set("Location", gatewayLocation(gatewayHost, parsed.Scheme, parsed.Host, parsed.RequestURI()))
+		response.Header.Set("Location", gatewayLocation(parsed.Scheme, parsed.Host, parsed.RequestURI()))
 		return nil
 	}
 	if strings.HasPrefix(location, "/") {
-		response.Header.Set("Location", gatewayLocation(gatewayHost, target.scheme, target.host, location))
+		response.Header.Set("Location", gatewayLocation(target.scheme, target.host, location))
 	} else {
-		response.Header.Set("Location", gatewayLocation(gatewayHost, target.scheme, target.host, "/"+location))
+		response.Header.Set("Location", gatewayLocation(target.scheme, target.host, "/"+location))
 	}
 	return nil
 }
 
-func gatewayLocation(gatewayHost, scheme, host, suffix string) string {
-	if gatewayHost == "" {
-		gatewayHost = "auto.fleey.de"
-	}
-	return "https://" + gatewayHost + "/" + scheme + "://" + host + suffix
+func gatewayLocation(scheme, host, suffix string) string {
+	return "https://auto.fleey.de/" + scheme + "://" + host + suffix
 }

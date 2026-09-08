@@ -10,7 +10,6 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
-	"strings"
 	"sync"
 	"time"
 
@@ -25,7 +24,7 @@ var (
 	dbPathFlag       = flag.String("db", "/opt/emby-proxy-stat/data/stats.db", "Path to sqlite database")
 	logPathFlag      = flag.String("log", "/var/log/caddy/auto.fleey.de.log", "Path to Caddy access log file")
 	portFlag         = flag.Int("port", 8999, "HTTP listen port")
-	passwordHashFlag = flag.Bool("generate-password-hash", false, "Read a password from stdin and print a PBKDF2 hash")
+	passwordHashFlag = flag.Bool("password-hash", false, "Generate argon2id hash for password supplied on stdin")
 )
 
 const DebounceSeconds = 1800
@@ -43,7 +42,6 @@ type Config struct {
 		DailyReportTime string `json:"daily_report_time"`
 	} `json:"telegram"`
 	CaddyLogPath string `json:"caddy_log_path"`
-	PublicURL    string `json:"public_url"`
 }
 
 type StatsResponse struct {
@@ -67,9 +65,10 @@ type TrafficEntry struct {
 }
 
 type ActiveStream struct {
-	ItemID string
-	URI    string
-	SeenAt time.Time
+	ItemID     string
+	URI        string
+	DeviceName string
+	SeenAt     time.Time
 }
 
 var (
@@ -121,14 +120,6 @@ func loadConfig() Config {
 	return currentConfig
 }
 
-func publicURL() string {
-	value := strings.TrimRight(strings.TrimSpace(loadConfig().PublicURL), "/")
-	if value != "" {
-		return value
-	}
-	return "https://auto.fleey.de"
-}
-
 func reloadConfig() error {
 	cfgMu.Lock()
 	defer cfgMu.Unlock()
@@ -174,7 +165,8 @@ func initDB() error {
 		client_ip TEXT,
 		target_host TEXT,
 		item_id TEXT,
-		uri TEXT
+		uri TEXT,
+		device_name TEXT DEFAULT ''
 	);
 	CREATE INDEX IF NOT EXISTS idx_play_date ON play_events(play_date);
 	CREATE INDEX IF NOT EXISTS idx_played_at ON play_events(played_at);
@@ -185,11 +177,19 @@ func initDB() error {
 		updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
 	);
 	`
-	_, err = db.Exec(schema)
-	return err
+	if _, err = db.Exec(schema); err != nil {
+		return err
+	}
+	// 针对已存在的旧数据库平滑迁移添加 device_name 字段
+	var colCount int
+	_ = db.QueryRow("SELECT COUNT(*) FROM pragma_table_info('play_events') WHERE name = 'device_name'").Scan(&colCount)
+	if colCount == 0 {
+		_, _ = db.Exec("ALTER TABLE play_events ADD COLUMN device_name TEXT DEFAULT ''")
+	}
+	return nil
 }
 
-func recordPlay(clientIP, targetHost, itemID, uri string, logTime time.Time) error {
+func recordPlay(clientIP, targetHost, itemID, uri, deviceName string, logTime time.Time) error {
 	now := logTime.Unix()
 	playedAtStr := logTime.Format("2006-01-02 15:04:05")
 	todayStr := logTime.Format("2006-01-02")
@@ -209,9 +209,9 @@ func recordPlay(clientIP, targetHost, itemID, uri string, logTime time.Time) err
 
 	dbMu.Lock()
 	_, err := db.Exec(`
-		INSERT INTO play_events (played_at, play_date, client_ip, target_host, item_id, uri)
-		VALUES (?, ?, ?, ?, ?, ?)
-	`, playedAtStr, todayStr, clientIP, targetHost, itemID, uri)
+		INSERT INTO play_events (played_at, play_date, client_ip, target_host, item_id, uri, device_name)
+		VALUES (?, ?, ?, ?, ?, ?, ?)
+	`, playedAtStr, todayStr, clientIP, targetHost, itemID, uri, deviceName)
 	dbMu.Unlock()
 	if err != nil {
 		return err

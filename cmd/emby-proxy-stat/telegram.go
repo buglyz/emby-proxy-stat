@@ -105,11 +105,10 @@ func telegramSchedulerWorker() {
 						"• 💾 <b>累计总流量</b>：<code>%s</code>\n"+
 						"• 📱 <b>累计服务设备</b>：<code>%d</code> 个\n\n"+
 						"<blockquote>⚡ <b>网关状态</b>：运行正常 (Go Edition)\n"+
-						"🔗 <b>控制面板</b>：<a href=\"%s\">%s</a></blockquote>",
+						"🔗 <b>控制面板</b>：<a href=\"https://auto.fleey.de\">auto.fleey.de</a></blockquote>",
 					todayStr, nowStr,
 					stats.TodayPlays, stats.TodayTrafficFmt, stats.TodayClients, stats.TodayHosts,
 					stats.TotalPlays, stats.TotalTrafficFmt, stats.TotalClients,
-					publicURL(), publicURL(),
 				)
 				if sendTelegramMessage(msg) {
 					lastSentDate = todayStr
