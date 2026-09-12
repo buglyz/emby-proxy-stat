@@ -1,35 +1,33 @@
 # Emby Proxy Toolbox (Go Edition) ⚡
 
-> 基于 **Caddy 2** 与 **Go (原生零依赖静态二进制)** 构建的通用流媒体动态反向代理网关与实时流量/播放统计系统。
+> 基于 **Caddy 2** 与 **Go（原生零依赖静态二进制）** 构建的通用流媒体动态反向代理网关与实时播放/流量统计系统。
 
 ---
 
 ## ✨ 核心特性
 
-- 🚀 **通用动态回源**：无需为每个上游重复配置域名，通过 `https://<gateway>/http://<upstream:port>/path` 或 `https://<gateway>/https://<upstream:port>/path` 动态反向代理任意 Emby / Jellyfin 实例，支持 301/302 重定向 Location 头自动改写。
+- 🚀 **通用动态回源（自带 SSRF 防护）**：通过 `https://<gateway>/http://<upstream:port>/路径` 或 `https://<gateway>/https://<upstream:port>/路径` 动态反代任意 Emby / Jellyfin 实例。动态回源统一经内置 **proxyguard**（127.0.0.1:8998）校验：拒绝环回/私网/链路本地/CGNAT 上游，DNS 解析结果钉扎拨号（防重绑定绕过），60s 解析缓存，301/302 Location 自动改写回网关格式。
 - 🎬 **精准心跳播放统计（方案 B）**：
-  - **杜绝虚高误判**：彻底排除详情页（`PlaybackInfo`）预加载造成的误判；
-  - **基于心跳精准捕获**：仅在客户端发送 `/Sessions/Playing/Progress` 播放心跳时计入有效播放（表明客户端已持续稳定播放超过 5 秒）；
-  - **媒体流精准绑定**：自动关联当前客户端的媒体流请求，精确记录真实 `Item_ID`、客户端 IP 与目标上游域名；
-  - **长效防抖去重**：同一客户端 + 同一上游 + 同一视频启用 **30 分钟防抖**，单次观影中的快进、分段 Range 不再重复计数。
-- 🌐 **字节级流转流量统计**：精确统计网关流转的网络下行与上行总流量，自动动态换算 `B / KB / MB / GB / TB`。
-- 📱 **响应式现代移动端 WebUI**：
-  - **大屏（桌面端）**：呈现高信息密度的专业指标表格视图；
-  - **移动端（竖屏/小屏）**：自适应切换为 **2×2 响应式大数字指标卡片（Grid Cards）**，播放与流量一目了然；
-  - **iOS Safari 体验优化**：表单输入框严格规范 `16px` 字号，彻底杜绝点击输入框时页面被浏览器自动放大拉伸的痛点；全面屏底部安全区（`safe-area-inset-bottom`）贴合。
-- 🔔 **富文本 Telegram 每日运营日报**：
-  - 每日定时汇总推送精美格式化排版卡片，支持展示**今日有效播放**、**流转流量**、**独立设备数**、**覆盖上游节点数**与历史全量汇总；
-  - 包含控制台面板直达链接与格式化时间戳，支持 Web 端一键触发联通测试推送。
-- 🛡️ **生产级高健壮性与安全设计**：
-  - **零外部 C 库依赖 (Zero-CGO)**：基于纯 Go 实现的 `modernc.org/sqlite`，可在任何现代 Linux 环境即插即用；
-  - **常驻 Goroutine Panic 自愈**：日志监听、流量批量刷盘与 TG 定时任务均内置 Panic Recover 与自愈重启机制；
-  - **无感日志滚动追踪**：首次启动 Seek 到末尾，轮转与截断重开后从文件头读取，绝不丢日志；
-  - **内存防泄漏治理**：内置周期性定时清理引擎，自动回收超时的活跃流字典、防抖缓存及过期 Session；
-  - **HTTP 攻击防护**：具备 1MB Body 读取限额与 5 秒请求头超时限制（防御 Slowloris 慢速连接攻击）；动态回源统一经过 proxy guard，拒绝回环、私网、链路本地、组播、未指定及 CGNAT 地址，并防 DNS 重绑定。
-  - **认证安全**：密码默认使用 PBKDF2-SHA256 哈希保存，登录失败限速，Cookie 启用 `HttpOnly`、`Secure` 与 `SameSite=Lax`。
-- ⚡ **极致轻量 & 高性能**：
-  - 内存常驻占用仅 **1.5 MB ~ 3.5 MB**，CPU 消耗常年趋近于 0；
-  - 采用 **内存实时原子累加 + 批量异步落库 (SQLite WAL 模式)**，消除高频磁盘 I/O 开销。
+  - 仅当客户端发送 `/Sessions/Playing/Progress` 播放心跳时计入有效播放，详情页（`PlaybackInfo`）预加载不误判；
+  - 心跳与媒体流按 **设备名 × 上游** 关联（设备名取自 Emby 鉴权头，不随移动网络 NAT 的 IP 漂移变化），无设备名时回退 IP 键；
+  - **滑动 30 分钟防抖窗口**：连续观看同一内容只计一次，停止超过窗口后再看才计新的一次，长视频不再被重复计数。
+- 🌐 **字节级流量统计**：按访问日志响应字节数统计网关下行流量（不含请求体与协议头开销），自动换算 `B / KB / MB / GB / TB`，支持按客户端 / 按目标节点的分布明细。
+- 📊 **WebUI 仪表盘**（单文件、零外部依赖、原生 SVG 图表）：
+  - 实时观看会话（2 分钟内有媒体流请求即视为活跃）；
+  - 今日流量分布（按客户端 / 按节点）；
+  - 最近 30 天播放与流量趋势（双轴、十字准星交互）；
+  - 今日播放分布环形图（按设备 / 按节点切换）；
+  - 骨架屏加载、数字滚动动画、优雅空状态、移动端 2×2 卡片自适应、iOS Safari 优化（16px 输入框防缩放、safe-area 底部安全区）、`:focus-visible` 与 `aria-label` 无障碍支持。
+- 🔔 **富文本 Telegram 每日运营日报**：定时推送今日有效播放、流转流量、独立设备数、覆盖节点数与历史全量汇总，支持 Web 端一键触发连通测试。
+- 🗄️ **数据保留策略**：`retention_days` 自动清理过期播放与流量记录（默认 365 天，负数永久保留）。
+- 🛡️ **生产级健壮性**：
+  - **零 CGO**：基于纯 Go 的 `modernc.org/sqlite`，任意 Linux 即插即用；
+  - 常驻 Goroutine Panic 自愈；无感日志轮转追踪（首次启动 Seek 到末尾，轮转/截断重开从文件头读取）；
+  - 内存防泄漏：活跃流、防抖缓存、过期会话周期回收；
+  - HTTP 防护：1MB Body 限额、5s 请求头超时（防 Slowloris）；
+  - **SIGHUP 热重载配置**；**SIGTERM 优雅退出**并冲刷流量缓冲，重启不丢数据；
+  - 客户端 IP 取 **X-Forwarded-For 可信链尾**（Caddy 追加段），伪造链首无法绕过登录限流或污染统计。
+- ⚡ **极致轻量**：常驻内存 ~3MB，CPU 趋近 0；内存实时累加 + 5s 批量落库（SQLite WAL）。
 
 ---
 
@@ -40,54 +38,44 @@
                │
                ▼
 [ Caddy 2 反向代理网关 (auto.your-domain.com) ]
-   ├── 媒体流/API 代理 ──────► [ Go proxy guard (127.0.0.1:8998) ] ──────► [ 外部 Emby 实例 ]
-   ├── 结构化访问日志 ──────► [ /var/log/caddy/<domain>.log ]
-   └── 管理控制台 (/) ──────► [ emby-proxy-stat 后台服务 (127.0.0.1:8999) ]
-                                    │
-                                    ├─ 异步 Log Tail 监听 (Progress 心跳过滤)
-                                    ├─ 内存缓冲区 (5s 批量写入 + 内存防泄漏回收)
-                                    ├─ SQLite 数据库 (WAL 模式)
-                                    └─ Telegram 运营日报定时推送
+   ├── /http(s)://上游/路径 ──► [ proxyguard :8998 ] ──► [ 公网上游 Emby 实例 ]
+   │                             （SSRF 校验 + DNS 钉扎 + Location 改写）
+   ├── 结构化访问日志 ────────► [ /var/log/caddy/<domain>.log ]
+   └── / 与 /api/* ──────────► [ emby-proxy-stat :8999 ]
+                                    ├─ 异步 Log Tail（Progress 心跳过滤）
+                                    ├─ 内存缓冲（5s 批量写入 SQLite WAL）
+                                    ├─ Telegram 运营日报
+                                    └─ 数据保留清理（每日）
 ```
-
----
 
 ## 📁 目录结构
 
 ```text
 emby-proxy-stat/
-├── .github/
-│   └── workflows/
-│       └── release.yml           # GitHub Actions 自动化多架构跨平台构建
-├── cmd/
-│   └── emby-proxy-stat/
-│       ├── main.go               # 配置、状态与共享类型
-│       ├── app_main.go           # HTTP 服务启动与路由
-│       ├── proxy_guard.go        # 动态回源与内网地址防护
-│       ├── auth.go / handlers.go # 认证与 HTTP API
-│       └── ...                   # 统计、日志、Telegram 与持久化模块
-│       └── index.html            # 仪表盘前端界面 (支持桌面端表格与移动端 2x2 卡片)
-├── web/
-│   └── index.html                # 前端静态源码备份
-├── caddy/
-│   └── Caddyfile                 # Caddy 动态反向代理与日志配置范本
+├── .github/workflows/release.yml   # GitHub Actions 多架构构建与发布
+├── cmd/emby-proxy-stat/main.go     # 入口：依赖组装、信号处理（SIGHUP/SIGTERM）
+├── internal/
+│   ├── auth/                       # PBKDF2 密码校验、会话管理、登录限流
+│   ├── caddylog/                   # 日志 tail、轮转检测、播放心跳识别流水线
+│   ├── clock/                      # 业务时区（Asia/Shanghai）与日报到期判断
+│   ├── config/                     # 配置加载/校验/热重载
+│   ├── netutil/                    # 客户端 IP 归一化（XFF 可信链尾提取）
+│   ├── notify/                     # Telegram 发送与每日运营日报
+│   ├── proxyguard/                 # SSRF 防护动态反代（:8998）
+│   ├── store/                      # SQLite(WAL)：播放事件、流量缓冲、统计查询
+│   └── web/                        # 仪表盘 HTTP 服务与内嵌前端（index.html）
+├── caddy/Caddyfile                 # Caddy 反代与 proxyguard 接线配置范本
 ├── deploy/
-│   ├── emby-proxy-stat.service   # systemd 守护进程配置文件
-│   ├── logrotate.caddy           # logrotate 日志轮转配置 (copytruncate 安全模式)
-│   └── install.sh                # 全自动一键安装脚本
-├── config.example.json           # 配置文件模板 (脱敏)
-├── go.mod / go.sum               # Go 模块与依赖定义
-├── .gitignore
-└── README.md                     # 项目说明文档
+│   ├── emby-proxy-stat.service     # systemd 守护进程配置
+│   ├── logrotate.caddy             # 日志轮转配置（copytruncate 安全模式）
+│   └── install.sh                  # 全自动一键安装脚本
+├── config.example.json             # 配置文件模板（脱敏）
+└── go.mod / go.sum
 ```
 
 ---
 
 ## 🚀 快速开始与一键部署
-
-### 交互式一键部署（推荐）
-
-直接克隆仓库并运行安装脚本（脚本会自动从 GitHub Releases 下载预编译好的单一静态二进制文件，无需预装 Go 编译器）：
 
 ```bash
 git clone https://github.com/buglyz/emby-proxy-stat.git
@@ -95,58 +83,36 @@ cd emby-proxy-stat
 sudo bash deploy/install.sh
 ```
 
-**安装脚本自动化流程**：
-1. 🌐 **Caddy 域名配置**：输入反代域名（如 `auto.mydomain.com`），脚本自动写入完整反代与日志规则并重载 Caddy；
-2. 🔐 **安全认证**：设置 Web 仪表盘管理员账号与访问密码；
-3. 📱 **Telegram 播报**：选择是否开启 Telegram 每日自动推送（输入 Bot Token / Chat ID / 定时推送时间）；
-4. ⚡ **二进制部署**：自动探测 CPU 架构（amd64 / arm64）并下载匹配的最新二进制；
-5. 🔄 **服务托管**：配置并启动 systemd 系统服务。
+安装脚本自动完成：Caddy 域名配置与重载 → 仪表盘管理员账号（PBKDF2 哈希）→ Telegram 播报（可选）→ 探测架构下载预编译二进制 → systemd 服务托管。
 
----
-
-### 手动构建与运行
-
-如果您需要自行从源码编译构建：
+### 手动构建
 
 ```bash
-# 1. 编译 Linux amd64 纯静态二进制
-CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -ldflags="-s -w" -o emby-proxy-stat ./cmd/emby-proxy-stat
+CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -ldflags="-s -w" -o emby-proxy-stat ./cmd/emby-proxy-stat
 
-# 2. 准备配置文件
-mkdir -p /opt/emby-proxy-stat/data
-cp config.example.json /opt/emby-proxy-stat/config.json
-id -u emby-proxy-stat >/dev/null 2>&1 || sudo useradd --system --home-dir /opt/emby-proxy-stat --shell /usr/sbin/nologin emby-proxy-stat
-sudo chown root:emby-proxy-stat /opt/emby-proxy-stat/config.json
-sudo chmod 640 /opt/emby-proxy-stat/config.json
+# 测试（含竞态检测）
+go test -race ./...
 
-# 3. 注册并启动 systemd 服务
-cp deploy/emby-proxy-stat.service /etc/systemd/system/
-systemctl daemon-reload
-systemctl enable --now emby-proxy-stat
+# 生成密码哈希
+echo 'your-password' | ./emby-proxy-stat -password-hash
 ```
-
-`config.json` 必须填写 `auth.username` 与 `auth.password_hash`；不要再写入明文 `auth.password`。可在编译后的二进制旁生成哈希：
-
-```bash
-read -r -s PASSWORD
-printf '%s' "$PASSWORD" | ./emby-proxy-stat -generate-password-hash
-unset PASSWORD
-```
-
-将输出的完整值填入 `password_hash` 后再启动服务。动态回源必须使用 `caddy/Caddyfile` 中转发到 `127.0.0.1:8998` 的规则；`8998` 只监听回环地址，且会拒绝解析到内网或其他保留地址的目标，公网地址不做限制。
 
 ---
 
 ## 📊 接口说明
 
-| 接口 | 方法 | 鉴权要求 | 说明 |
+| 接口 | 方法 | 鉴权 | 说明 |
 | :--- | :--- | :--- | :--- |
-| `/` | `GET` | 无 | 前端仪表盘与登录界面（支持响应式自适应布局） |
-| `/api/login` | `POST` | 无 | 用户登录验证，下发 `auth_token` Cookie（带 1MB 限额保护） |
-| `/api/logout` | `POST` | 无 | 退出登录并作废令牌 |
-| `/api/stats` | `GET` | 需要 Cookie | 获取今日与历史播放次数、流转流量、设备数与上游节点数 |
-| `/api/test-tg` | `POST` | 需要 Cookie | 立即触发一次 Telegram 运营富文本测试推送 |
-| `/api/health` | `GET` | 无 | 存活探针，返回 `{"status":"ok","engine":"go"}` |
+| `/` | GET | 无 | 前端仪表盘（登录/看板单页） |
+| `/api/login` | POST | 无 | 登录，签发 30 天 HttpOnly Cookie（限流 5 次/10 分钟） |
+| `/api/logout` | POST | 无 | 退出登录 |
+| `/api/stats` | GET | Cookie | 今日与历史播放、流量、设备数、节点数 |
+| `/api/clients` | GET | Cookie | 今日播放明细（设备×IP×节点聚合） |
+| `/api/sessions` | GET | Cookie | 实时观看会话 |
+| `/api/traffic-breakdown` | GET | Cookie | 今日流量按客户端/按节点分布 |
+| `/api/trend?days=30` | GET | Cookie | 最近 N 天播放与流量趋势（上限 365） |
+| `/api/test-tg` | POST | Cookie | 触发一次 Telegram 测试推送 |
+| `/api/health` | GET | 无 | 存活探针，返回 `{"status":"ok","engine":"go"}` |
 
 ### `/api/stats` 响应示例
 
@@ -168,6 +134,11 @@ unset PASSWORD
 ```
 
 ---
+
+## 📄 统计口径
+
+- **流量**：Caddy 访问日志的响应字节数（下行），4xx/5xx 不计入；分布明细自 `traffic_by_client` 表上线起累积。
+- **播放**：仅 `Sessions/Playing/Progress` 心跳计数；滑动 30 分钟窗口内同一 IP×上游×内容只计一次。
 
 ## 📄 开源许可证
 

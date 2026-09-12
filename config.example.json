@@ -1,7 +1,7 @@
 {
   "auth": {
     "username": "admin",
-    "password_hash": ""
+    "password_hash": "pbkdf2-sha256$210000$...使用 emby-proxy-stat -password-hash 生成"
   },
   "telegram": {
     "enabled": false,
@@ -10,5 +10,6 @@
     "daily_report_time": "23:59"
   },
   "caddy_log_path": "/var/log/caddy/emby-gateway.log",
-  "public_url": "https://your-domain.com"
+  "base_url": "https://your-domain.com",
+  "retention_days": 365
 }

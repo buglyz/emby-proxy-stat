@@ -275,7 +275,7 @@ fi
 
 if [ "${CONFIG_PENDING}" = true ]; then
     echo "==> 5. 生成密码哈希并保存配置..."
-    PASSWORD_HASH="$(printf '%s' "${INPUT_PASS}" | "${INSTALL_DIR}/emby-proxy-stat" -generate-password-hash)"
+    PASSWORD_HASH="$(printf '%s' "${INPUT_PASS}" | "${INSTALL_DIR}/emby-proxy-stat" -password-hash)"
     if [ -z "${PASSWORD_HASH}" ]; then
         echo "❌ 无法生成密码哈希，拒绝写入不安全的明文配置。" 1>&2
         exit 1

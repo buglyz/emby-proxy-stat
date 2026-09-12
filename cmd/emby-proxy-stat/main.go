@@ -1,295 +1,214 @@
+// emby-proxy-stat 是 Emby 代理网关的统计与控制台服务：
+// 解析 Caddy 访问日志产出播放/流量统计，提供仪表盘 Web API，
+// 并附带一层带 SSRF 防护的动态反向代理（127.0.0.1:8998，可选接入）。
 package main
 
 import (
-	"database/sql"
-	_ "embed"
-	"encoding/json"
+	"context"
 	"flag"
 	"fmt"
+	"io"
 	"log"
+	"net/http"
 	"os"
-	"path/filepath"
-	"regexp"
-	"sync"
+	"os/signal"
+	"strings"
+	"syscall"
 	"time"
 
-	_ "modernc.org/sqlite"
+	"emby-proxy-stat/internal/auth"
+	"emby-proxy-stat/internal/caddylog"
+	"emby-proxy-stat/internal/clock"
+	"emby-proxy-stat/internal/config"
+	"emby-proxy-stat/internal/notify"
+	"emby-proxy-stat/internal/proxyguard"
+	"emby-proxy-stat/internal/store"
+	"emby-proxy-stat/internal/web"
 )
 
-//go:embed index.html
-var indexHTML []byte
+const (
+	defaultConfigPath = "/opt/emby-proxy-stat/config.json"
+	defaultDBPath     = "/opt/emby-proxy-stat/data/stats.db"
+	defaultLogPath    = "/var/log/caddy/auto.fleey.de.log"
+	defaultPort       = 8999
+	proxyGuardPort    = 8998
 
-var (
-	configPathFlag   = flag.String("config", "/opt/emby-proxy-stat/config.json", "Path to config file")
-	dbPathFlag       = flag.String("db", "/opt/emby-proxy-stat/data/stats.db", "Path to sqlite database")
-	logPathFlag      = flag.String("log", "/var/log/caddy/auto.fleey.de.log", "Path to Caddy access log file")
-	portFlag         = flag.Int("port", 8999, "HTTP listen port")
-	passwordHashFlag = flag.Bool("password-hash", false, "Generate argon2id hash for password supplied on stdin")
+	trafficFlushInterval = 5 * time.Second
+	shutdownGracePeriod  = 5 * time.Second
 )
 
-const DebounceSeconds = 1800
+func main() {
+	configPath := flag.String("config", defaultConfigPath, "Path to config file")
+	dbPath := flag.String("db", defaultDBPath, "Path to sqlite database")
+	logPath := flag.String("log", defaultLogPath, "Fallback path to Caddy access log")
+	port := flag.Int("port", defaultPort, "HTTP listen port")
+	passwordHash := flag.Bool("password-hash", false, "Generate PBKDF2 hash for password supplied on stdin, then exit")
+	flag.Parse()
 
-type Config struct {
-	Auth struct {
-		Username     string `json:"username"`
-		Password     string `json:"password,omitempty"`
-		PasswordHash string `json:"password_hash,omitempty"`
-	} `json:"auth"`
-	Telegram struct {
-		Enabled         bool   `json:"enabled"`
-		BotToken        string `json:"bot_token"`
-		ChatID          string `json:"chat_id"`
-		DailyReportTime string `json:"daily_report_time"`
-	} `json:"telegram"`
-	CaddyLogPath string `json:"caddy_log_path"`
-}
-
-type StatsResponse struct {
-	TodayPlays      int64  `json:"today_plays"`
-	TotalPlays      int64  `json:"total_plays"`
-	TodayBytes      int64  `json:"today_bytes"`
-	TotalBytes      int64  `json:"total_bytes"`
-	TodayTrafficFmt string `json:"today_traffic_fmt"`
-	TotalTrafficFmt string `json:"total_traffic_fmt"`
-	TodayClients    int64  `json:"today_clients"`
-	TotalClients    int64  `json:"total_clients"`
-	TodayHosts      int64  `json:"today_hosts"`
-	TotalHosts      int64  `json:"total_hosts"`
-	Date            string `json:"date"`
-	Status          string `json:"status"`
-}
-
-type TrafficEntry struct {
-	Bytes    int64
-	Requests int64
-}
-
-type ActiveStream struct {
-	ItemID     string
-	URI        string
-	DeviceName string
-	SeenAt     time.Time
-}
-
-var (
-	videoStreamPattern = regexp.MustCompile(`(?i)/Videos/([a-zA-Z0-9\-_]+)/(?:stream|original|master|main|\w+\.\w+)`)
-	audioStreamPattern = regexp.MustCompile(`(?i)/Audio/([a-zA-Z0-9\-_]+)/stream`)
-	progressPattern    = regexp.MustCompile(`(?i)/Sessions/Playing/Progress`)
-	targetHostPattern  = regexp.MustCompile(`^/https?:/*([A-Za-z0-9.\-_:]+)`)
-
-	db            *sql.DB
-	dbMu          sync.Mutex
-	cfgMu         sync.RWMutex
-	currentConfig Config
-
-	activeStreams  = make(map[string]ActiveStream)
-	streamMu       sync.Mutex
-	recentPlays    = make(map[string]int64)
-	recentMu       sync.Mutex
-	trafficBuffer  = make(map[string]*TrafficEntry)
-	trafficMu      sync.Mutex
-	activeSessions = make(map[string]time.Time)
-	sessionMu      sync.Mutex
-)
-
-func formatBytes(b int64) string {
-	const (
-		kb = 1024
-		mb = 1024 * kb
-		gb = 1024 * mb
-		tb = 1024 * gb
-	)
-	fb := float64(b)
-	switch {
-	case b >= tb:
-		return fmt.Sprintf("%.2f TB", fb/float64(tb))
-	case b >= gb:
-		return fmt.Sprintf("%.2f GB", fb/float64(gb))
-	case b >= mb:
-		return fmt.Sprintf("%.2f MB", fb/float64(mb))
-	case b >= kb:
-		return fmt.Sprintf("%.2f KB", fb/float64(kb))
-	default:
-		return fmt.Sprintf("%d B", b)
+	if *passwordHash {
+		runPasswordHash()
+		return
 	}
+	run(context.Background(), options{
+		configPath: *configPath,
+		dbPath:     *dbPath,
+		logPath:    *logPath,
+		port:       *port,
+	})
 }
 
-func loadConfig() Config {
-	cfgMu.RLock()
-	defer cfgMu.RUnlock()
-	return currentConfig
+type options struct {
+	configPath string
+	dbPath     string
+	logPath    string
+	port       int
 }
 
-func reloadConfig() error {
-	cfgMu.Lock()
-	defer cfgMu.Unlock()
-	data, err := os.ReadFile(*configPathFlag)
+func runPasswordHash() {
+	password, err := io.ReadAll(io.LimitReader(os.Stdin, 1<<20))
 	if err != nil {
-		return err
+		log.Fatalf("failed to read password: %v", err)
 	}
-	var cfg Config
-	if err := json.Unmarshal(data, &cfg); err != nil {
-		return err
+	hash, err := auth.GeneratePasswordHash(strings.TrimSuffix(string(password), "\n"))
+	if err != nil {
+		log.Fatalf("failed to generate password hash: %v", err)
 	}
-	if err := validateConfig(cfg); err != nil {
-		return err
-	}
-	currentConfig = cfg
-	return nil
+	fmt.Println(hash)
 }
 
-func getEffectiveLogPath() string {
-	cfg := loadConfig()
+func run(ctx context.Context, opt options) {
+	cfgMgr, err := config.NewManager(opt.configPath)
+	if err != nil {
+		log.Fatalf("[Fatal] load config: %v", err)
+	}
+	db, err := store.Open(opt.dbPath)
+	if err != nil {
+		log.Fatalf("[Fatal] init db: %v", err)
+	}
+
+	cfg := cfgMgr.Current()
+	tailer := caddylog.NewTailer(db, effectiveLogPath(cfg, opt.logPath))
+	sender := notify.NewSender(cfg.Telegram.Enabled, cfg.Telegram.BotToken, cfg.Telegram.ChatID)
+	scheduler := notify.NewScheduler(
+		sender,
+		func() (store.StatsResponse, error) { return db.Stats(clock.Today()) },
+		func() string { return cfgMgr.Current().Telegram.DailyReportTime },
+		func() string { return cfgMgr.Current().BaseURL },
+	)
+	sessions := auth.NewSessionManager(web.SessionTTL())
+	limiter := auth.NewLoginLimiter()
+
+	// 后台任务统一挂到同一 ctx：主流程退出即全部终止
+	background, cancelBackground := context.WithCancel(ctx)
+	defer cancelBackground()
+	go tailer.Run(background)
+	go flushTrafficLoop(background, db)
+	go scheduler.Run(background)
+	go pruneLoop(background, db, cfgMgr)
+
+	// 可选 SSRF 防护反代层（当前 Caddy 未接入，保留备用）
+	startProxyGuard(fmt.Sprintf("127.0.0.1:%d", proxyGuardPort), cfgMgr)
+
+	apiServer := &http.Server{
+		Addr:              fmt.Sprintf("127.0.0.1:%d", opt.port),
+		Handler:           web.New(web.Deps{Config: cfgMgr, Store: db, Sessions: sessions, Limiter: limiter, Sender: sender, LiveSessions: tailer.ActiveSessions}),
+		ReadHeaderTimeout: 5 * time.Second,
+		ReadTimeout:       15 * time.Second,
+		WriteTimeout:      15 * time.Second,
+		IdleTimeout:       60 * time.Second,
+		MaxHeaderBytes:    1 << 20,
+	}
+
+	// SIGHUP 热重载配置；SIGTERM/SIGINT 优雅退出并冲刷流量缓冲
+	signals := make(chan os.Signal, 2)
+	signal.Notify(signals, syscall.SIGHUP, syscall.SIGINT, syscall.SIGTERM)
+	go func() {
+		for sig := range signals {
+			if sig == syscall.SIGHUP {
+				if err := cfgMgr.Reload(); err != nil {
+					log.Printf("[Config] reload failed: %v", err)
+				} else {
+					log.Printf("[Config] reloaded")
+				}
+				continue
+			}
+			log.Printf("[Shutdown] %s received, draining...", sig)
+			_ = apiServer.Shutdown(context.Background())
+			cancelBackground()
+			db.FlushTrafficOnce()
+			_ = db.Close()
+			os.Exit(0)
+		}
+	}()
+
+	log.Printf("[Go Stats Server] running on 127.0.0.1:%d", opt.port)
+	if err := apiServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+		log.Fatalf("[Fatal] server error: %v", err)
+	}
+	// ListenAndServe 正常返回（仅测试场景直接退出）也兜底冲刷
+	cancelBackground()
+	db.FlushTrafficOnce()
+	_ = db.Close()
+}
+
+func effectiveLogPath(cfg config.Config, fallback string) string {
 	if cfg.CaddyLogPath != "" {
 		return cfg.CaddyLogPath
 	}
-	return *logPathFlag
+	return fallback
 }
 
-func initDB() error {
-	if err := os.MkdirAll(filepath.Dir(*dbPathFlag), 0755); err != nil {
-		return err
-	}
-	var err error
-	db, err = sql.Open("sqlite", *dbPathFlag+"?_pragma=busy_timeout(5000)&_pragma=journal_mode(WAL)")
-	if err != nil {
-		return err
-	}
-	db.SetMaxOpenConns(5)
-	db.SetMaxIdleConns(2)
-	schema := `
-	CREATE TABLE IF NOT EXISTS play_events (
-		id INTEGER PRIMARY KEY AUTOINCREMENT,
-		played_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-		play_date TEXT,
-		client_ip TEXT,
-		target_host TEXT,
-		item_id TEXT,
-		uri TEXT,
-		device_name TEXT DEFAULT ''
-	);
-	CREATE INDEX IF NOT EXISTS idx_play_date ON play_events(play_date);
-	CREATE INDEX IF NOT EXISTS idx_played_at ON play_events(played_at);
-	CREATE TABLE IF NOT EXISTS daily_traffic (
-		date TEXT PRIMARY KEY,
-		bytes INTEGER DEFAULT 0,
-		requests INTEGER DEFAULT 0,
-		updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
-	);
-	`
-	if _, err = db.Exec(schema); err != nil {
-		return err
-	}
-	// 针对已存在的旧数据库平滑迁移添加 device_name 字段
-	var colCount int
-	_ = db.QueryRow("SELECT COUNT(*) FROM pragma_table_info('play_events') WHERE name = 'device_name'").Scan(&colCount)
-	if colCount == 0 {
-		_, _ = db.Exec("ALTER TABLE play_events ADD COLUMN device_name TEXT DEFAULT ''")
-	}
-	return nil
-}
-
-func recordPlay(clientIP, targetHost, itemID, uri, deviceName string, logTime time.Time) error {
-	now := logTime.Unix()
-	playedAtStr := logTime.Format("2006-01-02 15:04:05")
-	todayStr := logTime.Format("2006-01-02")
-	dedupKey := fmt.Sprintf("%s:%s:%s", clientIP, targetHost, itemID)
-
-	recentMu.Lock()
-	for key, value := range recentPlays {
-		if now-value > DebounceSeconds {
-			delete(recentPlays, key)
-		}
-	}
-	if last, ok := recentPlays[dedupKey]; ok && now-last < DebounceSeconds {
-		recentMu.Unlock()
-		return nil
-	}
-	recentMu.Unlock()
-
-	dbMu.Lock()
-	_, err := db.Exec(`
-		INSERT INTO play_events (played_at, play_date, client_ip, target_host, item_id, uri, device_name)
-		VALUES (?, ?, ?, ?, ?, ?, ?)
-	`, playedAtStr, todayStr, clientIP, targetHost, itemID, uri, deviceName)
-	dbMu.Unlock()
-	if err != nil {
-		return err
-	}
-	recentMu.Lock()
-	recentPlays[dedupKey] = now
-	recentMu.Unlock()
-	return nil
-}
-
-func addTraffic(dateStr string, sizeBytes int64) {
-	trafficMu.Lock()
-	defer trafficMu.Unlock()
-	entry, ok := trafficBuffer[dateStr]
-	if !ok {
-		entry = &TrafficEntry{}
-		trafficBuffer[dateStr] = entry
-	}
-	entry.Bytes += sizeBytes
-	entry.Requests++
-}
-
-func flushTrafficWorker() {
-	defer func() {
-		if r := recover(); r != nil {
-			log.Printf("[Panic Recover] flushTrafficWorker: %v", r)
-			go func() {
-				time.Sleep(time.Second)
-				flushTrafficWorker()
-			}()
-		}
-	}()
-	ticker := time.NewTicker(5 * time.Second)
-	cleanTicker := time.NewTicker(2 * time.Minute)
+// flushTrafficLoop 周期把内存流量缓冲落库。
+func flushTrafficLoop(ctx context.Context, db *store.Store) {
+	ticker := time.NewTicker(trafficFlushInterval)
 	defer ticker.Stop()
-	defer cleanTicker.Stop()
 	for {
 		select {
-		case <-cleanTicker.C:
-			now := time.Now()
-			streamMu.Lock()
-			for key, value := range activeStreams {
-				if now.Sub(value.SeenAt) > 10*time.Minute {
-					delete(activeStreams, key)
-				}
-			}
-			streamMu.Unlock()
-			recentMu.Lock()
-			nowUnix := now.Unix()
-			for key, value := range recentPlays {
-				if nowUnix-value > DebounceSeconds {
-					delete(recentPlays, key)
-				}
-			}
-			recentMu.Unlock()
-			sessionMu.Lock()
-			for key, value := range activeSessions {
-				if now.After(value) {
-					delete(activeSessions, key)
-				}
-			}
-			sessionMu.Unlock()
+		case <-ctx.Done():
+			return
 		case <-ticker.C:
-			trafficMu.Lock()
-			if len(trafficBuffer) == 0 {
-				trafficMu.Unlock()
-				continue
-			}
-			batch := make(map[string]TrafficEntry, len(trafficBuffer))
-			for key, value := range trafficBuffer {
-				batch[key] = *value
-			}
-			trafficBuffer = make(map[string]*TrafficEntry)
-			trafficMu.Unlock()
-			if err := persistTrafficBatch(batch); err != nil {
-				restoreTrafficBatch(batch)
-				log.Printf("[DB Error traffic batch] %v; batch restored", err)
+			if err := db.FlushTraffic(); err != nil {
+				log.Printf("[DB Error traffic batch] %v; batch restored for retry", err)
 			}
 		}
 	}
+}
+
+// pruneLoop 每小时检查一次数据保留策略，删除超过保留期的历史记录。
+func pruneLoop(ctx context.Context, db *store.Store, cfgMgr *config.Manager) {
+	ticker := time.NewTicker(time.Hour)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			retention := cfgMgr.Current().RetentionDays
+			if retention < 0 {
+				continue // 永久保留
+			}
+			cutoff := clock.Now().AddDate(0, 0, -retention).Format("2006-01-02")
+			if err := db.PruneOld(cutoff); err != nil {
+				log.Printf("[Prune] %v", err)
+			}
+		}
+	}
+}
+
+// startProxyGuard 启动 SSRF 防护反代层；端口占用仅告警不致命（可选组件）。
+func startProxyGuard(addr string, cfgMgr *config.Manager) {
+	handler := proxyguard.New(cfgMgr.Current().BaseURL)
+	server := &http.Server{
+		Addr:              addr,
+		Handler:           handler,
+		ReadHeaderTimeout: 5 * time.Second,
+		IdleTimeout:       60 * time.Second,
+		MaxHeaderBytes:    1 << 20,
+	}
+	go func() {
+		log.Printf("[Proxy Guard] running on %s", addr)
+		if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+			log.Printf("[Proxy Guard] stopped: %v", err)
+		}
+	}()
 }
