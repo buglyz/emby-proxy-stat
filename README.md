@@ -83,7 +83,18 @@ cd emby-proxy-stat
 sudo bash deploy/install.sh
 ```
 
-安装脚本自动完成：Caddy 域名配置与重载 → 仪表盘管理员账号（PBKDF2 哈希）→ Telegram 播报（可选）→ 探测架构下载预编译二进制 → systemd 服务托管。
+安装脚本自动完成：Caddy 检测与安装（可跳过）→ 交互式向导（域名、管理员密码两遍确认、Telegram 播报、日志路径、base_url、数据保留天数）→ 二进制获取（本地 → Release 下载 → 源码编译三级回退）→ systemd 托管 → Caddy 站点配置**仅追加**（先备份，validate 失败自动回滚，已有域名幂等跳过）→ 健康检查。
+
+再次运行不带参数会弹出管理菜单；也支持子命令：
+
+```bash
+sudo bash deploy/install.sh update       # 更新到最新 Release（自动备份+健康检查，失败给出回滚命令）
+sudo bash deploy/install.sh reconfigure  # 重新运行配置向导
+sudo bash deploy/install.sh caddy        # 重新追加/修复 Caddy 站点配置
+sudo bash deploy/install.sh status       # 查看服务状态
+```
+
+> 注：caddyctl 托管的环境下脚本会拒绝直改 Caddyfile，请使用 `caddyctl add-gateway`。
 
 ### 手动构建
 
